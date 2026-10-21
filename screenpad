@@ -1,0 +1,207 @@
+#!/bin/sh
+# screenpad - ScreenPad de la ZenBook Pro 15 UX580 en Linux (driver nvidia)
+# kan0p - https://github.com/kan0p/asus-screenpad-linux - MIT
+#
+# El panel cuelga de un puente HDMI Toshiba en la NVIDIA. El checksum del bloque CTA
+# de su EDID viene mal y el driver lo descarta, así que la salida queda "disconnected".
+# El script enciende el panel por WMI, lee el EDID por I2C, arregla el checksum
+# y lo carga como edid_override.
+#
+# uso: screenpad [on|off|replug|status|dump-edid ARCHIVO]
+
+set -u
+
+LIBDIR=${SCREENPAD_LIBDIR:-/usr/local/lib/screenpad}
+STATEDIR=/var/lib/screenpad
+CONF=/etc/screenpad.conf
+DEVID=00050031          # ASUS_WMI_DEVID_SCREENPAD_POWER
+
+# Si la autodetección falla: /etc/screenpad.conf con CONNECTOR=, I2C_BUS= o EDID=
+CONNECTOR=
+I2C_BUS=
+EDID=
+[ -r "$CONF" ] && . "$CONF"
+
+log() { echo "screenpad: $*"; }
+die() { echo "screenpad: error: $*" >&2; exit 1; }
+
+[ "$(id -u)" = 0 ] || die "debe ejecutarse como root"
+
+# energía del panel: DEVS/DSTS de ASUS WMI vía acpi_call
+
+acpi() {
+    printf '%s\n' "\\_SB.ATKD.WMNB 0x0 $1 $2" > /proc/acpi/call 2>/dev/null || return 1
+    tr -d '\0' < /proc/acpi/call
+}
+
+wmi_ready() {
+    [ -w /proc/acpi/call ] || modprobe acpi_call 2>/dev/null
+    [ -w /proc/acpi/call ] || die "el módulo acpi_call no está disponible (instala acpi_call-dkms / acpi-call-dkms)"
+}
+
+# el buffer va en little-endian: devid + valor
+devid_le() { echo "$DEVID" | sed 's/\(..\)\(..\)\(..\)\(..\)/\4\3\2\1/'; }
+
+power() {
+    wmi_ready
+    acpi 0x53564544 "b$(devid_le)0$1000000" > /dev/null
+}
+
+power_state() {
+    wmi_ready
+    acpi 0x53545344 "b$(devid_le)00000000"
+}
+
+backlight_on() {
+    bl=/sys/class/backlight/asus_screenpad
+    [ -d "$bl" ] || return 0
+    echo 0 > "$bl/bl_power" 2>/dev/null
+    [ "$(cat "$bl/brightness")" -gt 0 ] 2>/dev/null || cat "$bl/max_brightness" > "$bl/brightness"
+}
+
+# salida HDMI de la NVIDIA
+
+nvidia_card() {
+    for c in /sys/class/drm/card[0-9]; do
+        drv=$(basename "$(readlink -f "$c/device/driver")")
+        [ "$drv" = nvidia ] && { basename "$c"; return 0; }
+    done
+    return 1
+}
+
+debugfs_dir() {
+    mountpoint -q /sys/kernel/debug || mount -t debugfs none /sys/kernel/debug 2>/dev/null
+    pci=$(basename "$(readlink -f "/sys/class/drm/$CARD/device")")
+    for i in $(seq 1 30); do
+        [ -d "/sys/kernel/debug/dri/$pci/$1" ] && { echo "/sys/kernel/debug/dri/$pci/$1"; return 0; }
+        sleep 1
+    done
+    return 1
+}
+
+# Con el panel encendido, su HDMI marca hotplug aunque el EDID se rechace.
+# En mi equipo es HDMI-A-4.
+find_connector() {
+    [ -n "$CONNECTOR" ] && { echo "$CONNECTOR"; return 0; }
+    for s in /sys/class/drm/$CARD-HDMI-A-*; do
+        echo detect > "$s/status" 2>/dev/null
+        [ "$(cat "$s/status")" = connected ] && { basename "$s" | sed "s/^$CARD-//"; return 0; }
+    done
+    return 1
+}
+
+# Busca el EDID (0x50) en los buses I2C de la NVIDIA, recalcula el checksum de
+# cada bloque y lo guarda en $1. Devuelve el número de bus (aquí fue i2c-11).
+read_edid() {
+    command -v python3 > /dev/null || return 1
+    modprobe i2c-dev 2>/dev/null
+    buses=$I2C_BUS
+    if [ -z "$buses" ]; then
+        for a in /sys/bus/i2c/devices/i2c-*; do
+            grep -q '^NVIDIA i2c adapter' "$a/name" 2>/dev/null && buses="$buses ${a##*i2c-}"
+        done
+    fi
+    python3 -I - "$1" $buses <<'EOF'
+import fcntl, os, sys
+out, buses = sys.argv[1], sys.argv[2:]
+for bus in buses:
+    try:
+        fd = os.open('/dev/i2c-%s' % bus, os.O_RDWR)
+        try:
+            fcntl.ioctl(fd, 0x0703, 0x50)      # I2C_SLAVE
+            os.write(fd, b'\x00')
+            d = bytearray(os.read(fd, 256))
+        finally:
+            os.close(fd)
+    except OSError:
+        continue
+    if len(d) < 128 or d[:8] != b'\x00\xff\xff\xff\xff\xff\xff\x00':
+        continue
+    blocks = 1 + d[126]
+    if blocks > 2 or len(d) < 128 * blocks:
+        d[126] = 0
+        blocks = 1
+    d = d[:128 * blocks]
+    for b in range(blocks):
+        o = 128 * b
+        d[o + 127] = (-sum(d[o:o + 127])) & 255
+    open(out, 'wb').write(d)
+    print(bus)
+    sys.exit(0)
+sys.exit(1)
+EOF
+}
+
+pick_edid() {
+    mkdir -p "$STATEDIR"
+    if [ -n "$EDID" ]; then
+        echo "$EDID"
+    elif bus=$(read_edid "$STATEDIR/edid.bin"); then
+        log "EDID del panel leído desde i2c-$bus (sumas de verificación corregidas)" >&2
+        echo "$STATEDIR/edid.bin"
+    elif [ -s "$STATEDIR/edid.bin" ]; then
+        log "no se pudo leer el EDID, se usa la última copia válida" >&2
+        echo "$STATEDIR/edid.bin"
+    else
+        log "no se pudo leer el EDID, se usa el EDID incluido para la UX580" >&2
+        echo "$LIBDIR/ux580-tsb-fixed.bin"
+    fi
+}
+
+apply_edid() {
+    dir=$(debugfs_dir "$CONN") || die "no hay entrada en debugfs para $CONN"
+    cat "$1" > "$dir/edid_override" || die "el kernel rechazó el override del EDID"
+}
+
+reset_edid() {
+    dir=$(debugfs_dir "$CONN") && printf reset > "$dir/edid_override"
+}
+
+status_file() { echo "/sys/class/drm/$CARD-$CONN/status"; }
+
+# Al arrancar, el servicio corría antes de que nvidia-drm registrara la tarjeta
+# (falló a los ~6 s), por eso se espera hasta 30 s.
+for i in $(seq 1 30); do
+    CARD=$(nvidia_card) && break
+    sleep 1
+done
+[ -n "${CARD:-}" ] || die "no hay ninguna GPU usando el driver nvidia"
+
+cmd=${1:-on}
+case $cmd in
+on|replug)
+    power 1
+    backlight_on
+    sleep 2
+    CONN=$(find_connector) || die "el ScreenPad no apareció en ninguna salida HDMI de NVIDIA"
+    edid=$(pick_edid)
+    # COSMIC se queda con el EDID viejo si no se "desenchufa" la salida primero
+    [ "$cmd" = replug ] && { echo off > "$(status_file)"; sleep 2; }
+    apply_edid "$edid"
+    echo on > "$(status_file)"
+    sleep 1
+    echo detect > "$(status_file)"
+    log "activado en $CONN ($(cat "$(status_file)"))"
+    ;;
+off)
+    CONN=$(find_connector) && { reset_edid; echo detect > "$(status_file)"; }
+    power 0
+    log "desactivado"
+    ;;
+status)
+    log "encendido: $(power_state)"
+    for s in /sys/class/drm/$CARD-HDMI-A-*; do
+        log "$(basename "$s"): $(cat "$s/status")"
+    done
+    ;;
+dump-edid)
+    [ -n "${2:-}" ] || die "uso: screenpad dump-edid ARCHIVO"
+    power 1
+    sleep 2
+    bus=$(read_edid "$2") || die "no se encontró ningún EDID en los buses I2C de NVIDIA"
+    log "EDID de i2c-$bus guardado en $2"
+    ;;
+*)
+    die "uso: screenpad [on|off|replug|status|dump-edid ARCHIVO]"
+    ;;
+esac

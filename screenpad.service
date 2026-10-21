@@ -1,0 +1,15 @@
+[Unit]
+Description=Activa el ScreenPad de ASUS (corrección del EDID en NVIDIA)
+After=sys-kernel-debug.mount systemd-modules-load.service
+Wants=sys-kernel-debug.mount
+Before=display-manager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/screenpad on
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
