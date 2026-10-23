@@ -1,0 +1,513 @@
+#!/usr/bin/env python3
+# screenpadd - servicio de sesión del ScreenPad
+# kan0p - https://github.com/kan0p/asus-screenpad-linux - GPL-3.0-or-later
+#
+# Escucha Fn+F6 (KEY_MACRO1 en "Asus WMI hotkeys", ver udev/70-screenpad.hwdb)
+# y recorre los modos del pad:
+#   launcher  pantalla con apps, el launcher toma el pad
+#   touchpad  pantalla encendida, el pad es un touchpad normal
+#   dark      brillo 0: pantalla negra, el touchpad sigue funcionando
+#   off       panel sin alimentación y el pad bloqueado
+# Lee el pad y las teclas con evdev, así que no depende del compositor. Las órdenes al
+# firmware pasan por "sudo -n screenpad" (ver sudoers/screenpad).
+#
+# uso: screenpadd [--debug]
+
+import json, os, signal, sys, tomllib
+
+import evdev
+from evdev import ecodes
+import gi
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+try:
+    gi.require_version("GLibUnix", "2.0")
+    from gi.repository import GLibUnix
+    signal_add = GLibUnix.signal_add
+except (ValueError, ImportError):
+    signal_add = GLib.unix_signal_add
+
+MODOS = ("launcher", "touchpad", "dark", "off")
+NOMBRES = {"launcher": "Launcher", "touchpad": "Touchpad",
+           "dark": "Touchpad oscuro", "off": "Apagado"}
+ICONOS = {"launcher": "view-app-grid-symbolic", "touchpad": "input-touchpad-symbolic",
+          "dark": "display-brightness-off-symbolic", "off": "system-shutdown-symbolic"}
+
+BUS = "io.github.kan0p.ScreenPad"
+RUTA = "/io/github/kan0p/ScreenPad"
+BUS_LAUNCHER = "io.github.kan0p.ScreenPad.Launcher"
+SCREENPAD = os.environ.get("SCREENPAD_BIN", "/usr/local/bin/screenpad")
+# Para pruebas sin hardware: SCREENPAD_BIN=un-falso SCREENPAD_SIN_SUDO=1
+SUDO = [] if os.environ.get("SCREENPAD_SIN_SUDO") else ["sudo", "-n"]
+
+XDG_CONFIG = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+XDG_STATE = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+CONFIG = os.path.join(XDG_CONFIG, "screenpad", "config.toml")
+ESTADO = os.path.join(XDG_STATE, "screenpad", "estado.json")
+
+DEBUG = "--debug" in sys.argv
+# Fn+F6 remapeada por hwdb; sin ella llega como KEY_TOUCHPAD_TOGGLE
+TECLAS_MODO = (ecodes.KEY_MACRO1, ecodes.KEY_TOUCHPAD_TOGGLE)
+# Pausa tras el último cambio antes de tocar el firmware: recorrer los modos con
+# Fn+F6 no debe dar un replug por paso (una seguidilla colgó a cosmic-comp).
+ESPERA_MS = 1500
+# Mínimo entre dos replug seguidos
+ENTRE_REPLUG_S = 10
+
+INTERFAZ = f"""
+<node>
+  <interface name="{BUS}">
+    <method name="SetMode"><arg name="mode" type="s" direction="in"/></method>
+    <method name="NextMode"/>
+    <method name="SetBrightness"><arg name="level" type="u" direction="in"/></method>
+    <property name="Mode" type="s" access="read"/>
+    <property name="Brightness" type="u" access="read"/>
+    <property name="Cycle" type="as" access="read"/>
+    <signal name="ModeChanged"><arg name="mode" type="s"/></signal>
+  </interface>
+</node>"""
+
+
+def log(*a):
+    print("screenpadd:", *a, file=sys.stderr, flush=True)
+
+
+def debug(*a):
+    if DEBUG:
+        log(*a)
+
+
+def log_una_vez(conjunto, clave, *a):
+    if clave not in conjunto:
+        conjunto.add(clave)
+        log(*a)
+
+
+def leer_config():
+    conf = {"cycle": list(MODOS),
+            "keys_device": "Asus WMI hotkeys",
+            "pad_device": "GDX1515:00 27C6:01F4 Touchpad",
+            "startup_mode": "last",
+            "off_blocks_pad": True}
+    try:
+        with open(CONFIG, "rb") as f:
+            conf.update(tomllib.load(f))
+    except FileNotFoundError:
+        pass
+    except (tomllib.TOMLDecodeError, OSError) as e:
+        log(f"config ignorada ({CONFIG}): {e}")
+    ciclo = [m for m in conf["cycle"] if m in MODOS]
+    if not ciclo:
+        log("cycle vacío o inválido, se usa el ciclo completo")
+        ciclo = list(MODOS)
+    conf["cycle"] = ciclo
+    if conf["startup_mode"] not in (*MODOS, "last"):
+        log(f"startup_mode inválido: {conf['startup_mode']}, se usa el último modo")
+        conf["startup_mode"] = "last"
+    return conf
+
+
+def leer_estado():
+    try:
+        with open(ESTADO) as f:
+            e = json.load(f)
+    except (OSError, ValueError):
+        e = {}
+    modo = e.get("mode") if e.get("mode") in MODOS else "touchpad"
+    brillo = e.get("brightness")
+    brillo = brillo if isinstance(brillo, int) and 1 <= brillo <= 255 else 255
+    return modo, brillo
+
+
+def buscar_dispositivo(nombre):
+    for ruta in evdev.list_devices():
+        try:
+            d = evdev.InputDevice(ruta)
+        except OSError:
+            continue
+        if d.name == nombre:
+            return d
+        d.close()
+    return None
+
+
+class Servicio:
+    def __init__(self, loop):
+        self.loop = loop
+        self.conf = leer_config()
+        self.modo, self.brillo = leer_estado()
+        if self.conf["startup_mode"] != "last":
+            self.modo = self.conf["startup_mode"]
+
+        # Lo que creemos que tiene el hardware. None = desconocido.
+        self.hw_encendido = None
+        self.hw_brillo = None
+        self.ocupado = False        # hay una orden al firmware en curso
+        self.fallo = None           # (deseado) con el que falló la última orden
+        self.espera = 0             # timeout pendiente de reconciliar_pronto
+        self.ultimo_replug = 0      # GLib.get_monotonic_time() del último replug
+
+        self.teclas = None
+        self.pad = None
+        self.vigilancias = {}
+        self.id_aviso = 0
+        self.avisados = set()       # problemas ya registrados, para no repetirlos
+
+        self.bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+        self.nodo = Gio.DBusNodeInfo.new_for_xml(INTERFAZ)
+        self.bus.register_object(RUTA, self.nodo.interfaces[0], self._dbus_llamada,
+                                 self._dbus_propiedad, None)
+        Gio.bus_own_name_on_connection(self.bus, BUS, Gio.BusNameOwnerFlags.NONE, None,
+                                       lambda *_: self._sin_nombre())
+        self._escuchar_suspension()
+
+        if self.modo == "launcher" and not self._hay_launcher():
+            self.modo = "touchpad"
+        self._abrir_teclas()
+        self._consultar_hardware()
+
+    # ----- modos ------------------------------------------------------------
+
+    def _hay_launcher(self):
+        try:
+            r = self.bus.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus",
+                                   "org.freedesktop.DBus", "NameHasOwner",
+                                   GLib.Variant("(s)", (BUS_LAUNCHER,)),
+                                   GLib.VariantType("(b)"), Gio.DBusCallFlags.NONE,
+                                   500, None)
+            return r.unpack()[0]
+        except GLib.Error:
+            return False
+
+    def _ciclo_disponible(self):
+        return [m for m in self.conf["cycle"]
+                if m != "launcher" or self._hay_launcher()]
+
+    def siguiente(self):
+        ciclo = self._ciclo_disponible()
+        if not ciclo:
+            return
+        i = ciclo.index(self.modo) + 1 if self.modo in ciclo else 0
+        self.poner_modo(ciclo[i % len(ciclo)])
+
+    def poner_modo(self, modo):
+        if modo not in MODOS:
+            raise ValueError(f"modo desconocido: {modo}")
+        if modo == "launcher" and not self._hay_launcher():
+            raise ValueError("el launcher no está corriendo")
+        if modo != self.modo:
+            log(f"modo: {self.modo} -> {modo}")
+            self.modo = modo
+            self._guardar()
+            self.bus.emit_signal(None, RUTA, BUS, "ModeChanged", GLib.Variant("(s)", (modo,)))
+        self._avisar(f"ScreenPad: {NOMBRES[modo]}", ICONOS[modo])
+        self.fallo = None
+        self.reconciliar_pronto()
+
+    def poner_brillo(self, nivel):
+        nivel = max(1, min(255, int(nivel)))
+        self.brillo = nivel
+        self._guardar()
+        self.fallo = None
+        self.reconciliar_pronto()
+
+    def _guardar(self):
+        os.makedirs(os.path.dirname(ESTADO), exist_ok=True)
+        tmp = ESTADO + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"mode": self.modo, "brightness": self.brillo}, f)
+        os.replace(tmp, ESTADO)
+
+    # ----- reconciliación con el hardware -----------------------------------
+
+    def _deseado(self):
+        encendido = self.modo != "off"
+        brillo = 0 if self.modo == "dark" else self.brillo
+        return encendido, brillo, self.modo == "off" and self.conf["off_blocks_pad"]
+
+    def reconciliar_pronto(self):
+        # El bloqueo del pad va ya; el firmware espera a que se dejen de pedir cambios.
+        self._bloquear_pad(self._deseado()[2])
+        if self.espera:
+            GLib.source_remove(self.espera)
+        self.espera = GLib.timeout_add(ESPERA_MS, self._fin_espera)
+
+    def _fin_espera(self):
+        self.espera = 0
+        self.reconciliar()
+        return False
+
+    def reconciliar(self):
+        encendido, brillo, bloquear = self._deseado()
+        # El bloqueo del pad es local e inmediato.
+        self._bloquear_pad(bloquear)
+        if self.ocupado or self.espera or self.hw_encendido is None:
+            return
+        deseado = (encendido, brillo)
+        if self.fallo == deseado:
+            return
+        if encendido and not self.hw_encendido:
+            # replug y no on: tras "screenpad off" la salida se desconectó y COSMIC solo
+            # vuelve a leer el EDID si la ve desenchufarse y enchufarse otra vez.
+            falta = self.ultimo_replug + ENTRE_REPLUG_S * 1_000_000 - GLib.get_monotonic_time()
+            if falta > 0:
+                debug(f"replug en {falta // 1000} ms")
+                self.espera = GLib.timeout_add(falta // 1000 + 1, self._fin_espera)
+                return
+            self.ultimo_replug = GLib.get_monotonic_time()
+            self._firmware(["replug", str(brillo)], deseado, lambda: self._hw(True, brillo))
+        elif not encendido and self.hw_encendido:
+            self._firmware(["off"], deseado, lambda: self._hw(False, None))
+        elif encendido and self.hw_brillo != brillo:
+            self._firmware(["brightness", str(brillo)], deseado, lambda: self._hw(True, brillo))
+
+    def _hw(self, encendido, brillo):
+        self.hw_encendido, self.hw_brillo = encendido, brillo
+
+    def _firmware(self, args, deseado, al_terminar):
+        self.ocupado = True
+        cmd = [*SUDO, SCREENPAD, *args]
+        debug("ejecuta:", " ".join(cmd))
+        try:
+            p = Gio.Subprocess.new(cmd, Gio.SubprocessFlags.STDOUT_PIPE
+                                   | Gio.SubprocessFlags.STDERR_MERGE)
+        except GLib.Error as e:
+            self._fallo_firmware(args, deseado, e.message)
+            return
+
+        def listo(p, res):
+            try:
+                _, salida, _ = p.communicate_utf8_finish(res)
+            except GLib.Error as e:
+                salida = e.message
+            salida = (salida or "").strip()
+            if p.get_successful():
+                if salida:
+                    debug(salida)
+                al_terminar()
+                self.ocupado = False
+                self.reconciliar()
+            else:
+                self._fallo_firmware(args, deseado, salida)
+        p.communicate_utf8_async(None, None, listo)
+
+    def _fallo_firmware(self, args, deseado, detalle):
+        self.ocupado = False
+        self.fallo = deseado
+        log(f"falló 'screenpad {' '.join(args)}': {detalle}")
+        self._avisar("ScreenPad: error", "dialog-error-symbolic",
+                     f"screenpad {args[0]} falló", urgente=True)
+
+    def _consultar_hardware(self):
+        """Lee encendido y brillo reales; hasta entonces no se toca el firmware."""
+        self.ocupado = True
+
+        def con_brillo(salida):
+            try:
+                self.hw_brillo = int(salida.strip())
+            except ValueError:
+                self.hw_brillo = None
+            if self.hw_brillo and self.modo != "dark":
+                self.brillo = self.hw_brillo
+            self.ocupado = False
+            log(f"hardware: encendido={self.hw_encendido} brillo={self.hw_brillo}, modo {self.modo}")
+            self.reconciliar()
+
+        def con_estado(salida):
+            # "screenpad: encendido: 0x100a0"; el byte bajo es 0 con el panel apagado
+            for linea in salida.splitlines():
+                if "encendido:" in linea:
+                    try:
+                        self.hw_encendido = int(linea.split()[-1], 16) & 0xff != 0
+                    except ValueError:
+                        pass
+            if self.hw_encendido is None:
+                self.hw_encendido = True
+            if self.hw_encendido:
+                self._leer(["brightness"], con_brillo)
+            else:
+                con_brillo("")
+
+        self._leer(["status"], con_estado)
+
+    def _leer(self, args, cb):
+        try:
+            p = Gio.Subprocess.new([*SUDO, SCREENPAD, *args],
+                                   Gio.SubprocessFlags.STDOUT_PIPE
+                                   | Gio.SubprocessFlags.STDERR_MERGE)
+        except GLib.Error as e:
+            log(f"no se pudo ejecutar screenpad: {e.message}")
+            cb("")
+            return
+
+        def listo(p, res):
+            try:
+                _, salida, _ = p.communicate_utf8_finish(res)
+            except GLib.Error:
+                salida = ""
+            if not p.get_successful():
+                log(f"'screenpad {' '.join(args)}' falló: {(salida or '').strip()}")
+            cb(salida or "")
+        p.communicate_utf8_async(None, None, listo)
+
+    # ----- dispositivos de entrada -------------------------------------------
+
+    def _vigilar(self, dev, manejar):
+        def leer(_fd, _cond):
+            try:
+                for ev in dev.read():
+                    manejar(ev)
+            except BlockingIOError:
+                pass
+            except OSError as e:
+                log(f"se perdió {dev.name}: {e}")
+                self._cerrar(dev)
+                GLib.timeout_add_seconds(2, self._reabrir)
+                return False
+            return True
+        self.vigilancias[dev.fd] = GLib.io_add_watch(dev.fd, GLib.PRIORITY_DEFAULT,
+                                                     GLib.IO_IN | GLib.IO_ERR | GLib.IO_HUP, leer)
+
+    def _cerrar(self, dev):
+        fuente = self.vigilancias.pop(dev.fd, None)
+        if fuente:
+            GLib.source_remove(fuente)
+        try:
+            dev.close()
+        except OSError:
+            pass
+        if dev is self.teclas:
+            self.teclas = None
+        if dev is self.pad:
+            self.pad = None
+
+    def _reabrir(self):
+        if self.teclas is None:
+            self._abrir_teclas()
+        self.reconciliar()
+        return False
+
+    def _abrir_teclas(self):
+        try:
+            self.teclas = buscar_dispositivo(self.conf["keys_device"])
+        except PermissionError:
+            self.teclas = None
+        if self.teclas is None:
+            log_una_vez(self.avisados, "teclas", f"sin acceso a '{self.conf['keys_device']}'"
+                        " (¿falta la regla udev?), se reintenta cada 5 s")
+            GLib.timeout_add_seconds(5, self._reabrir)
+            return
+        self.avisados.discard("teclas")
+        log(f"escuchando Fn+F6 en {self.teclas.path}")
+        self._vigilar(self.teclas, self._tecla)
+
+    def _tecla(self, ev):
+        if ev.type == ecodes.EV_KEY and ev.code in TECLAS_MODO and ev.value == 1:
+            debug("Fn+F6")
+            self.siguiente()
+
+    def _bloquear_pad(self, bloquear):
+        if bloquear and self.pad is None:
+            try:
+                pad = buscar_dispositivo(self.conf["pad_device"])
+            except PermissionError:
+                pad = None
+            if pad is None:
+                log_una_vez(self.avisados, "pad",
+                            f"no se pudo abrir '{self.conf['pad_device']}' para bloquearlo")
+                return
+            self.avisados.discard("pad")
+            try:
+                pad.grab()
+            except OSError as e:
+                log(f"no se pudo bloquear el pad: {e}")
+                pad.close()
+                return
+            self.pad = pad
+            # Se leen y descartan los eventos para que no se acumulen.
+            self._vigilar(pad, lambda _ev: None)
+            debug("pad bloqueado")
+        elif not bloquear and self.pad is not None:
+            self._cerrar(self.pad)      # cerrar libera el grab
+            debug("pad liberado")
+
+    # ----- suspensión --------------------------------------------------------
+
+    def _escuchar_suspension(self):
+        try:
+            sistema = Gio.bus_get_sync(Gio.BusType.SYSTEM)
+        except GLib.Error:
+            return
+
+        def al_dormir(_c, _s, _r, _i, _n, params):
+            if not params.unpack()[0]:
+                # Al despertar el firmware puede haber apagado el panel: se vuelve a leer.
+                log("reanudación: se relee el hardware")
+                self.hw_encendido = self.hw_brillo = None
+                GLib.timeout_add_seconds(2, lambda: self._consultar_hardware() and False)
+        sistema.signal_subscribe("org.freedesktop.login1", "org.freedesktop.login1.Manager",
+                                 "PrepareForSleep", "/org/freedesktop/login1", None,
+                                 Gio.DBusSignalFlags.NONE, al_dormir)
+        self._sistema = sistema
+
+    # ----- avisos ------------------------------------------------------------
+
+    def _avisar(self, titulo, icono, cuerpo="", urgente=False):
+        hints = {"transient": GLib.Variant("b", True),
+                 "urgency": GLib.Variant("y", 2 if urgente else 0)}
+        params = GLib.Variant("(susssasa{sv}i)", ("ScreenPad", self.id_aviso, icono, titulo,
+                                                  cuerpo, [], hints, 1500))
+
+        def listo(bus, res):
+            try:
+                self.id_aviso = bus.call_finish(res).unpack()[0]
+            except GLib.Error as e:
+                debug(f"aviso no mostrado: {e.message}")
+        self.bus.call("org.freedesktop.Notifications", "/org/freedesktop/Notifications",
+                      "org.freedesktop.Notifications", "Notify", params,
+                      GLib.VariantType("(u)"), Gio.DBusCallFlags.NONE, 1000, None, listo)
+
+    # ----- D-Bus -------------------------------------------------------------
+
+    def _dbus_llamada(self, _c, _s, _r, _i, metodo, params, inv):
+        try:
+            if metodo == "SetMode":
+                self.poner_modo(params.unpack()[0])
+            elif metodo == "NextMode":
+                self.siguiente()
+            elif metodo == "SetBrightness":
+                self.poner_brillo(params.unpack()[0])
+            inv.return_value(None)
+        except ValueError as e:
+            inv.return_dbus_error(f"{BUS}.Error", str(e))
+
+    def _dbus_propiedad(self, _c, _s, _r, _i, nombre):
+        if nombre == "Mode":
+            return GLib.Variant("s", self.modo)
+        if nombre == "Brightness":
+            return GLib.Variant("u", self.brillo)
+        if nombre == "Cycle":
+            return GLib.Variant("as", self._ciclo_disponible())
+        return None
+
+    def _sin_nombre(self):
+        log(f"{BUS} ya tiene dueño: ¿hay otro screenpadd corriendo?")
+        self.loop.quit()
+
+    def cerrar(self):
+        for dev in (self.teclas, self.pad):
+            if dev is not None:
+                self._cerrar(dev)
+
+
+def main():
+    loop = GLib.MainLoop()
+    servicio = Servicio(loop)
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal_add(GLib.PRIORITY_DEFAULT, sig, lambda: loop.quit() or False)
+    loop.run()
+    servicio.cerrar()
+
+
+if __name__ == "__main__":
+    main()

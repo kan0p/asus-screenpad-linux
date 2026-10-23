@@ -1,0 +1,3 @@
+# screenpadd cambia de modo sin pedir contraseña. Solo estas órdenes: dump-edid
+# escribe archivos como root y queda fuera. install.sh reemplaza USUARIO.
+USUARIO ALL=(root) NOPASSWD: /usr/local/bin/screenpad on, /usr/local/bin/screenpad replug, /usr/local/bin/screenpad replug [0-9]*, /usr/local/bin/screenpad off, /usr/local/bin/screenpad status, /usr/local/bin/screenpad brightness, /usr/local/bin/screenpad brightness [0-9]*

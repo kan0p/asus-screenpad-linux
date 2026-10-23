@@ -31,6 +31,7 @@ Si no puede leer el EDID, usa la última copia válida que guardó en `/var/lib/
 - `acpi_call`: `acpi_call-dkms` en Arch, `acpi-call-dkms` en Debian/Ubuntu, `akmod-acpi_call` en Fedora (RPM Fusion)
 - `python3` para la lectura por I2C. Sin él funciona igual, pero con el EDID incluido.
 - debugfs montado en `/sys/kernel/debug` (casi todas las distros lo montan por defecto)
+- Para los modos: `python-evdev` y `python-gobject`
 
 ## Instalación
 
@@ -54,13 +55,42 @@ xrandr --output HDMI-0 --mode 1080x1920 --rotate right --below eDP-1
 
 Para quitarlo: `sudo ./uninstall.sh`.
 
+## Modos y Fn+F6
+
+En Windows, Fn+F6 cambia el modo del ScreenPad. En Linux el kernel la entrega como `KEY_TOUCHPAD_TOGGLE` en *Asus WMI hotkeys*, y algunos escritorios (COSMIC, GNOME, KDE) la usan para apagar el touchpad por su cuenta. `install.sh` la cambia por `KEY_MACRO1` con una regla hwdb (`udev/70-screenpad.hwdb`), que ningún escritorio usa, y `screenpadd` la escucha directamente con evdev, así que funciona en cualquier compositor:
+
+| Modo | Pantalla | Pad |
+|---|---|---|
+| `launcher` | encendida, con apps (en desarrollo) | táctil |
+| `touchpad` | encendida | touchpad |
+| `dark` | brillo 0, negra | touchpad, gastando menos batería |
+| `off` | apagada | bloqueado |
+
+Cada pulsación pasa al siguiente modo y muestra un aviso. El orden se cambia en `~/.config/screenpad/config.toml`:
+
+```toml
+cycle = ["touchpad", "dark", "off"]
+startup_mode = "last"    # modo al iniciar sesión: "last" (el último) o uno de los cuatro
+off_blocks_pad = true    # en "off", bloquear también el pad
+```
+
+Con `startup_mode = "off"` y `off_blocks_pad = false`, el panel arranca apagado y el pad funciona como touchpad: útil mientras se prueba algo que pueda colgar el escritorio.
+
+`install.sh` agrega dos permisos para que esto funcione sin contraseña:
+
+- una regla udev (`udev/70-screenpad.rules`) que da a la sesión acceso de lectura **solo** a las teclas ASUS y al touchpad del pad, no al teclado;
+- una regla sudoers (`sudoers/screenpad`) que permite `screenpad on|replug|off|status|brightness` sin contraseña. `dump-edid` queda fuera, porque escribe archivos como root.
+
+El brillo se maneja por WMI y no por `/sys/class/backlight`. En 0 apaga solo la retroiluminación: la salida sigue conectada y el touchpad sigue funcionando.
+
 ## Comandos
 
 ```
 screenpad on                 enciende el panel y carga el EDID (lo que corre al arrancar)
-screenpad replug             igual, pero desconecta y reconecta la salida
+screenpad replug [0-255]     igual, pero desconecta y reconecta la salida (con el brillo dado)
 screenpad off                quita el override y apaga el panel
 screenpad status             estado WMI y salidas HDMI de la NVIDIA
+screenpad brightness [0-255] lee o fija el brillo
 screenpad dump-edid ARCHIVO  guarda el EDID ya corregido
 ```
 
@@ -74,16 +104,29 @@ I2C_BUS=11
 EDID=/ruta/al/edid.bin
 ```
 
+Desde la sesión, sin root:
+
+```
+screenpadctl status          modo, brillo y ciclo actuales
+screenpadctl next            lo mismo que Fn+F6
+screenpadctl mode dark       launcher, touchpad, dark u off
+screenpadctl brightness 180  brillo de los modos encendidos (1-255)
+```
+
 ## Otros problemas que tuve
 
 - **Touchpad muerto.** COSMIC dejó `input_touchpad_override` en `ForceDisable` cuando apareció el segundo monitor. Lo cambié a `None` en `~/.config/cosmic/com.system76.CosmicComp/v1/input_touchpad_override`.
 - **Cursor invisible.** Por defecto el ScreenPad quedaba en 0,0, a la izquierda de la pantalla principal, y el cursor se iba ahí. Con la disposición de arriba se arregla.
 - **No aparece después de reiniciar.** Revisa `journalctl -u screenpad`. Ahí queda registrado si no encontró la GPU o el EDID.
+- **Fn+F6 no hace nada.** Revisa `journalctl --user -u screenpadd`. Si dice "sin acceso", la regla udev no se aplicó: cierra sesión y vuelve a entrar.
 
 ## Archivos
 
-- `screenpad`: el script (sh, con un poco de Python para el I2C)
-- `screenpad.service`: unidad de systemd
+- `screenpad`: encendido, EDID y brillo (sh, con un poco de Python para el I2C)
+- `screenpadd`: servicio de sesión con los modos y Fn+F6 (Python, `python-evdev`, `python-gobject`)
+- `screenpadctl`: control de `screenpadd` desde la terminal
+- `systemd/`: `screenpad.service` (sistema) y `screenpadd.service` (sesión)
+- `udev/`, `sudoers/`: permisos y el cambio de Fn+F6 a `KEY_MACRO1`
 - `install.sh`, `uninstall.sh`
 - `edid/ux580-tsb-original.bin`: el EDID tal como sale del puente, con el checksum malo
 - `edid/ux580-tsb-fixed.bin`: el mismo, corregido
@@ -98,4 +141,4 @@ La temporización 1080x1920 la saqué de [SinanAkkoyun/ScreenpadLinux](https://g
 
 ## Licencia
 
-MIT, ver [LICENSE](LICENSE).
+GPL-3.0-or-later, ver [LICENSE](LICENSE).

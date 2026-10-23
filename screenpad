@@ -1,13 +1,13 @@
 #!/bin/sh
 # screenpad - ScreenPad de la ZenBook Pro 15 UX580 en Linux (driver nvidia)
-# kan0p - https://github.com/kan0p/asus-screenpad-linux - MIT
+# kan0p - https://github.com/kan0p/asus-screenpad-linux - GPL-3.0-or-later
 #
 # El panel cuelga de un puente HDMI Toshiba en la NVIDIA. El checksum del bloque CTA
 # de su EDID viene mal y el driver lo descarta, así que la salida queda "disconnected".
 # El script enciende el panel por WMI, lee el EDID por I2C, arregla el checksum
 # y lo carga como edid_override.
 #
-# uso: screenpad [on|off|replug|status|dump-edid ARCHIVO]
+# uso: screenpad [on|off|replug [0-255]|status|brightness [0-255]|dump-edid ARCHIVO]
 
 set -u
 
@@ -15,6 +15,7 @@ LIBDIR=${SCREENPAD_LIBDIR:-/usr/local/lib/screenpad}
 STATEDIR=/var/lib/screenpad
 CONF=/etc/screenpad.conf
 DEVID=00050031          # ASUS_WMI_DEVID_SCREENPAD_POWER
+LIGHT=00050032          # ASUS_WMI_DEVID_SCREENPAD_LIGHT
 
 # Si la autodetección falla: /etc/screenpad.conf con CONNECTOR=, I2C_BUS= o EDID=
 CONNECTOR=
@@ -40,7 +41,7 @@ wmi_ready() {
 }
 
 # el buffer va en little-endian: devid + valor
-devid_le() { echo "$DEVID" | sed 's/\(..\)\(..\)\(..\)\(..\)/\4\3\2\1/'; }
+devid_le() { echo "${1:-$DEVID}" | sed 's/\(..\)\(..\)\(..\)\(..\)/\4\3\2\1/'; }
 
 power() {
     wmi_ready
@@ -50,6 +51,20 @@ power() {
 power_state() {
     wmi_ready
     acpi 0x53545344 "b$(devid_le)00000000"
+}
+
+# Brillo por WMI y no por /sys/class/backlight: en 0 apaga solo la retroiluminación,
+# la salida sigue conectada y el touchpad sigue funcionando.
+brightness() {
+    wmi_ready
+    if [ -z "${1:-}" ]; then
+        v=$(acpi 0x53545344 "b$(devid_le $LIGHT)00000000") || die "no se pudo leer el brillo"
+        echo $((v & 0xff))
+        return
+    fi
+    case $1 in *[!0-9]*) die "brillo inválido: $1 (0-255)" ;; esac
+    [ "$1" -le 255 ] || die "brillo inválido: $1 (0-255)"
+    acpi 0x53564544 "b$(devid_le $LIGHT)$(printf %02x "$1")000000" > /dev/null
 }
 
 backlight_on() {
@@ -159,6 +174,26 @@ reset_edid() {
 
 status_file() { echo "/sys/class/drm/$CARD-$CONN/status"; }
 
+# Tras encenderlo, el HDMI del panel marca "connected" solo en ~1 s; se consulta en
+# vez de esperar un tiempo fijo, sin forzar detect (cada detect avisa al compositor).
+wait_hotplug() {
+    for i in $(seq 1 50); do
+        for s in /sys/class/drm/$CARD-HDMI-A-*; do
+            [ "$(cat "$s/status")" = connected ] && return 0
+        done
+        sleep 0.1
+    done
+    return 1
+}
+
+# El conector del último "on", para que replug no tenga que buscarlo
+saved_connector() {
+    c=$(cat "$STATEDIR/conector" 2>/dev/null) && [ -e "/sys/class/drm/$CARD-$c/status" ] && echo "$c"
+}
+
+# el brillo no necesita la GPU y tiene que responder al instante
+[ "${1:-}" = brightness ] && { brightness "${2:-}"; exit; }
+
 # Al arrancar, el servicio corría antes de que nvidia-drm registrara la tarjeta
 # (falló a los ~6 s), por eso se espera hasta 30 s.
 for i in $(seq 1 30); do
@@ -169,14 +204,39 @@ done
 
 cmd=${1:-on}
 case $cmd in
-on|replug)
+on)
     power 1
     backlight_on
-    sleep 2
+    wait_hotplug || sleep 2
     CONN=$(find_connector) || die "el ScreenPad no apareció en ninguna salida HDMI de NVIDIA"
-    edid=$(pick_edid)
-    # COSMIC se queda con el EDID viejo si no se "desenchufa" la salida primero
-    [ "$cmd" = replug ] && { echo off > "$(status_file)"; sleep 2; }
+    mkdir -p "$STATEDIR"
+    echo "$CONN" > "$STATEDIR/conector"
+    apply_edid "$(pick_edid)"
+    echo on > "$(status_file)"
+    sleep 1
+    echo detect > "$(status_file)"
+    log "activado en $CONN ($(cat "$(status_file)"))"
+    ;;
+replug)
+    # Desde la sesión, tras "off". El brillo va primero: se conserva al apagar y, si
+    # venía de 0 (modo dark), el panel encendería sin luz hasta el final.
+    power 1
+    [ -n "${2:-}" ] && brightness "$2"
+    backlight_on
+    if CONN=$(saved_connector); then
+        edid=$STATEDIR/edid.bin
+        [ -s "$edid" ] || edid=$(pick_edid)
+    else
+        wait_hotplug || sleep 2
+        CONN=$(find_connector) || die "el ScreenPad no apareció en ninguna salida HDMI de NVIDIA"
+        mkdir -p "$STATEDIR"
+        echo "$CONN" > "$STATEDIR/conector"
+        edid=$(pick_edid)
+    fi
+    # COSMIC se queda con el EDID viejo si no ve la salida desenchufarse primero.
+    # Esos 2 s cubren también el arranque del panel (~1 s).
+    echo off > "$(status_file)"
+    sleep 2
     apply_edid "$edid"
     echo on > "$(status_file)"
     sleep 1
@@ -202,6 +262,6 @@ dump-edid)
     log "EDID de i2c-$bus guardado en $2"
     ;;
 *)
-    die "uso: screenpad [on|off|replug|status|dump-edid ARCHIVO]"
+    die "uso: screenpad [on|off|replug [0-255]|status|brightness [0-255]|dump-edid ARCHIVO]"
     ;;
 esac
