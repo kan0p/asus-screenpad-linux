@@ -34,6 +34,7 @@ Si no puede leer el EDID, usa la última copia válida que guardó en `/var/lib/
 - Para los modos: `python-evdev` y `python-gobject`
 - Para el launcher y su configuración: `gtk4`, `gtk4-layer-shell` y `libadwaita`
 - Para Quick Key: `wtype` (usa el teclado virtual de Wayland; no funciona en GNOME)
+- Para la música: `playerctl` (la biblioteca con su typelib) y `wpctl` de WirePlumber para el volumen
 
 ## Instalación
 
@@ -90,12 +91,12 @@ El brillo se maneja por WMI y no por `/sys/class/backlight`. En 0 apaga solo la 
 
 ## Launcher
 
-`screenpad-launcher` es la pantalla del modo `launcher`: hora y fecha, una cuadrícula de 4×2 con páginas y una barra con touchpad, todas las apps (o inicio, fuera del inicio) y Control Center. El nodo táctil del panel nunca emite, así que el launcher lee el pad con evdev, lo toma en exclusiva y traduce cada toque a la posición en pantalla. No depende del compositor.
+`screenpad-launcher` es la pantalla del modo `launcher`: hora y fecha, una cuadrícula de 4×2 con páginas y una barra con touchpad, todas las apps (o inicio, fuera del inicio), música y Control Center. El nodo táctil del panel nunca emite, así que el launcher lee el pad con evdev, lo toma en exclusiva y traduce cada toque a la posición en pantalla. No depende del compositor.
 
 - **Tocar** abre la app.
 - **Mantener presionado** levanta el mosaico: se arrastra para reordenar, al borde para cambiar de página, y sobre la barra roja para quitarlo del inicio.
 - **Deslizar de lado** cambia de página.
-- **Todas las apps**, el botón central de la barra, lista las utilidades y todo lo instalado. Mantener presionado un elemento lo agrega al inicio o lo quita.
+- **Todas las apps**, el botón central de la barra, lista las utilidades y todo lo instalado, con filtros por categoría. Mantener presionado un elemento lo agrega al inicio o lo quita.
 - **Cuatro dedos** (un toque corto) entran a un touchpad temporal: el fondo difuminado con la estela de los dedos y el pad libre para mover el cursor. Se vuelve con cuatro dedos o tras unos segundos sin tocar.
 
 ### Control Center y utilidades
@@ -105,8 +106,13 @@ El **Control Center** sube desde la barra: brillo del pad (se arrastra con el de
 - **Number Key**: teclado numérico que escribe en la app activa.
 - **Quick Key**: hasta 16 atajos (copiar, pegar, deshacer, captura…) que se mandan a la app activa con `wtype`.
 - **Calculadora**: `%` es porcentaje; **Insertar** escribe el resultado en la app activa.
+- **Calendario**: el mes con el día de hoy; se desliza de lado para cambiar de mes.
 
-Las tres son mosaicos que se pueden poner en el inicio.
+Las cuatro son mosaicos que se pueden poner en el inicio.
+
+### Música
+
+Cuando una app reproduce algo (YouTube en el navegador, Spotify, VLC…), la barra muestra un ecualizador animado con el título. Lo detecta por MPRIS, igual que el panel del escritorio. Al tocarlo se abre una ventana con la carátula, el progreso (se arrastra para adelantar), anterior, pausa y siguiente, y el volumen general del sistema. Aleatorio, repetir e "Ir a la app" aparecen solo si la app los admite. Con varias apps a la vez, arriba se elige cuál controlar. El botón se oculta si el reproductor se detiene o tras 10 minutos en pausa.
 
 ### Teclado numérico virtual
 

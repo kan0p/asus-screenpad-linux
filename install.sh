@@ -73,4 +73,6 @@ else
     echo "activa los servicios de sesión con: systemctl --user enable --now screenpadd screenpad-launcher"
 fi
 command -v wtype > /dev/null || echo "aviso: Quick Key necesita wtype"
+python3 -c 'import gi; gi.require_version("Playerctl", "2.0")' 2>/dev/null \
+    || echo "aviso: los controles de música necesitan playerctl"
 echo "Instalación completa. Fn+F6 cambia el modo del ScreenPad."
