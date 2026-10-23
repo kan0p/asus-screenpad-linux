@@ -3,7 +3,7 @@
 # kan0p - https://github.com/kan0p/asus-screenpad-linux - GPL-3.0-or-later
 """uso: screenpadctl status
        screenpadctl next
-       screenpadctl mode launcher|touchpad|dark|off
+       screenpadctl mode launcher|monitor|dark|off
        screenpadctl brightness 1-255"""
 
 import sys

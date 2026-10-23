@@ -1,6 +1,6 @@
 # asus-screenpad-linux
 
-Script para que el ScreenPad de la ZenBook Pro 15 UX580 (UX580GE/GD) funcione en Linux con el driver propietario de NVIDIA. Lo uso en Arch con COSMIC (Wayland), pero no depende del escritorio.
+Scripts para que el ScreenPad de la ZenBook Pro 15 UX580 (UX580GE/GD) funcione en Linux con el driver propietario de NVIDIA: encendido, modos con Fn+F6 y un launcher táctil al estilo de ScreenXpert. Lo uso en Arch con COSMIC (Wayland).
 
 ## Qué pasaba
 
@@ -32,6 +32,7 @@ Si no puede leer el EDID, usa la última copia válida que guardó en `/var/lib/
 - `python3` para la lectura por I2C. Sin él funciona igual, pero con el EDID incluido.
 - debugfs montado en `/sys/kernel/debug` (casi todas las distros lo montan por defecto)
 - Para los modos: `python-evdev` y `python-gobject`
+- Para el launcher y su configuración: `gtk4`, `gtk4-layer-shell` y `libadwaita`
 
 ## Instalación
 
@@ -61,18 +62,21 @@ En Windows, Fn+F6 cambia el modo del ScreenPad. En Linux el kernel la entrega co
 
 | Modo | Pantalla | Pad |
 |---|---|---|
-| `launcher` | encendida, con apps (en desarrollo) | táctil |
-| `touchpad` | encendida | touchpad |
+| `launcher` | el launcher | táctil |
+| `monitor` | monitor extendido normal | touchpad |
 | `dark` | brillo 0, negra | touchpad, gastando menos batería |
 | `off` | apagada | bloqueado |
 
-Cada pulsación pasa al siguiente modo y muestra un aviso. El orden se cambia en `~/.config/screenpad/config.toml`:
+Cada pulsación pasa al siguiente modo y muestra un aviso. `launcher` se salta si el launcher no está corriendo. El orden se cambia en `~/.config/screenpad/config.toml`:
 
 ```toml
-cycle = ["touchpad", "dark", "off"]
+cycle = ["launcher", "monitor", "dark", "off"]
 startup_mode = "last"    # modo al iniciar sesión: "last" (el último) o uno de los cuatro
 off_blocks_pad = true    # en "off", bloquear también el pad
+isolate_pointer = true   # en launcher y dark, que el cursor no pase al pad (solo COSMIC)
 ```
+
+COSMIC no deja separar dos pantallas, así que con `isolate_pointer` el pad se mueve a la esquina inferior derecha de la pantalla principal en los modos `launcher` y `dark`, donde comparten solo 4 px de borde. En `monitor` vuelve a la posición que tenía.
 
 Con `startup_mode = "off"` y `off_blocks_pad = false`, el panel arranca apagado y el pad funciona como touchpad: útil mientras se prueba algo que pueda colgar el escritorio.
 
@@ -82,6 +86,30 @@ Con `startup_mode = "off"` y `off_blocks_pad = false`, el panel arranca apagado 
 - una regla sudoers (`sudoers/screenpad`) que permite `screenpad on|replug|off|status|brightness` sin contraseña. `dump-edid` queda fuera, porque escribe archivos como root.
 
 El brillo se maneja por WMI y no por `/sys/class/backlight`. En 0 apaga solo la retroiluminación: la salida sigue conectada y el touchpad sigue funcionando.
+
+## Launcher
+
+`screenpad-launcher` es la pantalla del modo `launcher`: hora y fecha, una cuadrícula de 4×2 con páginas y una barra con touchpad, inicio y Control Center. El nodo táctil del panel nunca emite, así que el launcher lee el pad con evdev, lo toma en exclusiva y traduce cada toque a la posición en pantalla. No depende del compositor.
+
+- **Tocar** abre la app.
+- **Mantener presionado** levanta el mosaico: se arrastra para reordenar, al borde para cambiar de página, y sobre la barra roja para quitarlo del inicio.
+- **Deslizar de lado** cambia de página.
+- **Todas las apps** lista todo lo instalado. Mantener presionada una app la agrega al inicio o la quita.
+- **Cuatro dedos** (un toque corto) entran a un touchpad temporal: el fondo difuminado con la estela de los dedos y el pad libre para mover el cursor. Se vuelve con cuatro dedos o tras unos segundos sin tocar.
+
+El botón de Control Center abre por ahora `screenpad-config` en la pantalla principal: el fondo (predeterminado, color o imagen), el difuminado del touchpad temporal y los segundos para volver. Escribe en `config.toml`, y el launcher aplica los cambios al instante:
+
+```toml
+background_mode = "default"   # "default", "color" o "image"
+background_color = "#1b2433"
+background = "~/Imágenes/fondo.jpg"
+background_blur = 12          # px, solo en el touchpad temporal
+touchpad_return = 4           # s sin tocar para volver al launcher; 0 = nunca
+```
+
+El orden del inicio se guarda en `~/.local/state/screenpad/inicio.json`.
+
+cosmic-comp 1.10 desconecta a la aplicación que oculta o destruye una superficie layer-shell. Por eso el launcher nunca se oculta: fuera de su modo queda de 1×1 píxel, transparente, en la capa del fondo. Cuando la salida del pad desaparece (modo `off`, `replug`) el compositor la destruye igual; el servicio se reinicia solo y no crea la ventana hasta que la salida vuelve.
 
 ## Comandos
 
@@ -109,7 +137,7 @@ Desde la sesión, sin root:
 ```
 screenpadctl status          modo, brillo y ciclo actuales
 screenpadctl next            lo mismo que Fn+F6
-screenpadctl mode dark       launcher, touchpad, dark u off
+screenpadctl mode dark       launcher, monitor, dark u off
 screenpadctl brightness 180  brillo de los modos encendidos (1-255)
 ```
 
@@ -119,13 +147,17 @@ screenpadctl brightness 180  brillo de los modos encendidos (1-255)
 - **Cursor invisible.** Por defecto el ScreenPad quedaba en 0,0, a la izquierda de la pantalla principal, y el cursor se iba ahí. Con la disposición de arriba se arregla.
 - **No aparece después de reiniciar.** Revisa `journalctl -u screenpad`. Ahí queda registrado si no encontró la GPU o el EDID.
 - **Fn+F6 no hace nada.** Revisa `journalctl --user -u screenpadd`. Si dice "sin acceso", la regla udev no se aplicó: cierra sesión y vuelve a entrar.
+- **El launcher no aparece.** Revisa `journalctl --user -u screenpad-launcher`. Busca la salida en `/var/lib/screenpad/conector`; si no la encuentra, se puede fijar con `output = "HDMI-A-4"` en `config.toml`.
 
 ## Archivos
 
 - `screenpad`: encendido, EDID y brillo (sh, con un poco de Python para el I2C)
 - `screenpadd`: servicio de sesión con los modos y Fn+F6 (Python, `python-evdev`, `python-gobject`)
 - `screenpadctl`: control de `screenpadd` desde la terminal
-- `systemd/`: `screenpad.service` (sistema) y `screenpadd.service` (sesión)
+- `screenpad-launcher`: el launcher (GTK4 y gtk4-layer-shell)
+- `screenpad-config`: la configuración en la pantalla principal (libadwaita)
+- `icons/`: mosaicos e íconos de interfaz del launcher
+- `systemd/`: `screenpad.service` (sistema), `screenpadd.service` y `screenpad-launcher.service` (sesión)
 - `udev/`, `sudoers/`: permisos y el cambio de Fn+F6 a `KEY_MACRO1`
 - `install.sh`, `uninstall.sh`
 - `edid/ux580-tsb-original.bin`: el EDID tal como sale del puente, con el checksum malo

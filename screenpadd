@@ -5,7 +5,7 @@
 # Escucha Fn+F6 (KEY_MACRO1 en "Asus WMI hotkeys", ver udev/70-screenpad.hwdb)
 # y recorre los modos del pad:
 #   launcher  pantalla con apps, el launcher toma el pad
-#   touchpad  pantalla encendida, el pad es un touchpad normal
+#   monitor   monitor extendido normal, el pad es un touchpad
 #   dark      brillo 0: pantalla negra, el touchpad sigue funcionando
 #   off       panel sin alimentación y el pad bloqueado
 # Lee el pad y las teclas con evdev, así que no depende del compositor. Las órdenes al
@@ -13,7 +13,7 @@
 #
 # uso: screenpadd [--debug]
 
-import json, os, signal, sys, tomllib
+import json, os, re, shutil, signal, sys, tomllib
 
 import evdev
 from evdev import ecodes
@@ -27,10 +27,10 @@ try:
 except (ValueError, ImportError):
     signal_add = GLib.unix_signal_add
 
-MODOS = ("launcher", "touchpad", "dark", "off")
-NOMBRES = {"launcher": "Launcher", "touchpad": "Touchpad",
+MODOS = ("launcher", "monitor", "dark", "off")
+NOMBRES = {"launcher": "Launcher", "monitor": "Monitor",
            "dark": "Touchpad oscuro", "off": "Apagado"}
-ICONOS = {"launcher": "view-app-grid-symbolic", "touchpad": "input-touchpad-symbolic",
+ICONOS = {"launcher": "view-app-grid-symbolic", "monitor": "video-display-symbolic",
           "dark": "display-brightness-off-symbolic", "off": "system-shutdown-symbolic"}
 
 BUS = "io.github.kan0p.ScreenPad"
@@ -48,11 +48,17 @@ ESTADO = os.path.join(XDG_STATE, "screenpad", "estado.json")
 DEBUG = "--debug" in sys.argv
 # Fn+F6 remapeada por hwdb; sin ella llega como KEY_TOUCHPAD_TOGGLE
 TECLAS_MODO = (ecodes.KEY_MACRO1, ecodes.KEY_TOUCHPAD_TOGGLE)
-# Pausa tras el último cambio antes de tocar el firmware: recorrer los modos con
-# Fn+F6 no debe dar un replug por paso (una seguidilla colgó a cosmic-comp).
+# Pausa tras el último cambio antes de tocar el firmware, para no hacer un replug por
+# cada paso del ciclo: cosmic-comp se cuelga con varios replug seguidos.
 ESPERA_MS = 1500
 # Mínimo entre dos replug seguidos
 ENTRE_REPLUG_S = 10
+# Modos en los que el cursor no debe pasar al pad. COSMIC no admite huecos entre
+# salidas: el pad se pone en la esquina inferior derecha de la principal, donde
+# comparten solo 4 px de borde.
+MODOS_AISLADOS = ("launcher", "dark")
+CONECTOR = "/var/lib/screenpad/conector"
+GIRADAS = ("rotate90", "rotate270", "flipped-90", "flipped-270")
 
 INTERFAZ = f"""
 <node>
@@ -88,7 +94,8 @@ def leer_config():
             "keys_device": "Asus WMI hotkeys",
             "pad_device": "GDX1515:00 27C6:01F4 Touchpad",
             "startup_mode": "last",
-            "off_blocks_pad": True}
+            "off_blocks_pad": True,
+            "isolate_pointer": True}
     try:
         with open(CONFIG, "rb") as f:
             conf.update(tomllib.load(f))
@@ -113,10 +120,34 @@ def leer_estado():
             e = json.load(f)
     except (OSError, ValueError):
         e = {}
-    modo = e.get("mode") if e.get("mode") in MODOS else "touchpad"
+    modo = e.get("mode") if e.get("mode") in MODOS else "monitor"
     brillo = e.get("brightness")
     brillo = brillo if isinstance(brillo, int) and 1 <= brillo <= 255 else 255
-    return modo, brillo
+    pos = e.get("monitor_position")
+    pos = tuple(pos) if isinstance(pos, list) and len(pos) == 2 else None
+    return modo, brillo, pos
+
+
+def leer_salidas(kdl):
+    """Salidas activas de 'cosmic-randr list --kdl': nombre -> (x, y, ancho, alto, fabricante)."""
+    salidas = {}
+    for bloque in re.split(r'^output ', kdl, flags=re.M)[1:]:
+        nombre = re.match(r'"([^"]+)" enabled=#(\w+)', bloque)
+        pos = re.search(r'^\s*position (-?\d+) (-?\d+)', bloque, re.M)
+        modo = re.search(r'^\s*mode (\d+) (\d+) \d+ current=#true', bloque, re.M)
+        if not (nombre and pos and modo) or nombre.group(2) != "true":
+            continue
+        escala = re.search(r'^\s*scale ([\d.]+)', bloque, re.M)
+        escala = float(escala.group(1)) if escala else 1.0
+        giro = re.search(r'^\s*transform "([^"]+)"', bloque, re.M)
+        ancho, alto = int(modo.group(1)), int(modo.group(2))
+        if giro and giro.group(1) in GIRADAS:
+            ancho, alto = alto, ancho
+        fab = re.search(r'make="([^"]*)"', bloque)
+        salidas[nombre.group(1)] = (int(pos.group(1)), int(pos.group(2)),
+                                    round(ancho / escala), round(alto / escala),
+                                    fab.group(1) if fab else "")
+    return salidas
 
 
 def buscar_dispositivo(nombre):
@@ -135,7 +166,8 @@ class Servicio:
     def __init__(self, loop):
         self.loop = loop
         self.conf = leer_config()
-        self.modo, self.brillo = leer_estado()
+        self.modo, self.brillo, self.pos_monitor = leer_estado()
+        self.ubicando = False
         if self.conf["startup_mode"] != "last":
             self.modo = self.conf["startup_mode"]
 
@@ -162,7 +194,7 @@ class Servicio:
         self._escuchar_suspension()
 
         if self.modo == "launcher" and not self._hay_launcher():
-            self.modo = "touchpad"
+            self.modo = "monitor"
         self._abrir_teclas()
         self._consultar_hardware()
 
@@ -215,7 +247,8 @@ class Servicio:
         os.makedirs(os.path.dirname(ESTADO), exist_ok=True)
         tmp = ESTADO + ".tmp"
         with open(tmp, "w") as f:
-            json.dump({"mode": self.modo, "brightness": self.brillo}, f)
+            json.dump({"mode": self.modo, "brightness": self.brillo,
+                       "monitor_position": self.pos_monitor}, f)
         os.replace(tmp, ESTADO)
 
     # ----- reconciliación con el hardware -----------------------------------
@@ -234,8 +267,61 @@ class Servicio:
 
     def _fin_espera(self):
         self.espera = 0
+        self._ubicar_salida()
         self.reconciliar()
         return False
+
+    # ----- posición del pad en COSMIC ---------------------------------------
+
+    def _ubicar_salida(self):
+        """Aísla el pad del cursor en MODOS_AISLADOS y lo devuelve a su lugar en monitor."""
+        if (not self.conf["isolate_pointer"] or self.ubicando or self.modo == "off"
+                or not shutil.which("cosmic-randr")):
+            return
+        self.ubicando = True
+        try:
+            p = Gio.Subprocess.new(["cosmic-randr", "list", "--kdl"],
+                                   Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE)
+        except GLib.Error:
+            self.ubicando = False
+            return
+
+        def listo(p, res):
+            try:
+                _, salida, _ = p.communicate_utf8_finish(res)
+            except GLib.Error:
+                salida = ""
+            self.ubicando = False
+            self._mover_pad(leer_salidas(salida or ""))
+        p.communicate_utf8_async(None, None, listo)
+
+    def _mover_pad(self, salidas):
+        try:
+            with open(CONECTOR) as f:
+                pad = f.read().strip()
+        except OSError:
+            pad = next((n for n, s in salidas.items() if "Toshiba" in s[4]), None)
+        principal = next((n for n in salidas if n != pad), None)
+        if pad not in salidas or principal is None:
+            return
+        x, y = salidas[pad][:2]
+        px, py, pw, ph = salidas[principal][:4]
+        esquina = (px + pw, py + ph)
+        aislado = x == esquina[0] and y >= py + ph - 4
+        if self.modo in MODOS_AISLADOS and not aislado:
+            self.pos_monitor = (x, y)
+            self._guardar()
+            destino = esquina
+        elif self.modo == "monitor" and aislado and self.pos_monitor:
+            destino = self.pos_monitor
+        else:
+            return
+        debug(f"{pad}: {x},{y} -> {destino[0]},{destino[1]}")
+        try:
+            Gio.Subprocess.new(["cosmic-randr", "position", pad, *map(str, destino)],
+                               Gio.SubprocessFlags.STDERR_SILENCE)
+        except GLib.Error as e:
+            log(f"no se pudo mover {pad}: {e.message}")
 
     def reconciliar(self):
         encendido, brillo, bloquear = self._deseado()
@@ -286,6 +372,9 @@ class Servicio:
                     debug(salida)
                 al_terminar()
                 self.ocupado = False
+                if args[0] == "replug":
+                    # COSMIC tarda en volver a publicar la salida tras el hotplug
+                    GLib.timeout_add(2000, lambda: self._ubicar_salida() and False)
                 self.reconciliar()
             else:
                 self._fallo_firmware(args, deseado, salida)

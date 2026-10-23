@@ -95,7 +95,6 @@ debugfs_dir() {
 }
 
 # Con el panel encendido, su HDMI marca hotplug aunque el EDID se rechace.
-# En mi equipo es HDMI-A-4.
 find_connector() {
     [ -n "$CONNECTOR" ] && { echo "$CONNECTOR"; return 0; }
     for s in /sys/class/drm/$CARD-HDMI-A-*; do
@@ -106,7 +105,7 @@ find_connector() {
 }
 
 # Busca el EDID (0x50) en los buses I2C de la NVIDIA, recalcula el checksum de
-# cada bloque y lo guarda en $1. Devuelve el número de bus (aquí fue i2c-11).
+# cada bloque y lo guarda en $1. Devuelve el número de bus.
 read_edid() {
     command -v python3 > /dev/null || return 1
     modprobe i2c-dev 2>/dev/null
@@ -194,8 +193,7 @@ saved_connector() {
 # el brillo no necesita la GPU y tiene que responder al instante
 [ "${1:-}" = brightness ] && { brightness "${2:-}"; exit; }
 
-# Al arrancar, el servicio corría antes de que nvidia-drm registrara la tarjeta
-# (falló a los ~6 s), por eso se espera hasta 30 s.
+# nvidia-drm puede registrar la tarjeta varios segundos después de que arranca el servicio.
 for i in $(seq 1 30); do
     CARD=$(nvidia_card) && break
     sleep 1
@@ -218,8 +216,7 @@ on)
     log "activado en $CONN ($(cat "$(status_file)"))"
     ;;
 replug)
-    # Desde la sesión, tras "off". El brillo va primero: se conserva al apagar y, si
-    # venía de 0 (modo dark), el panel encendería sin luz hasta el final.
+    # El brillo WMI se conserva con el panel apagado: se fija antes de encender.
     power 1
     [ -n "${2:-}" ] && brightness "$2"
     backlight_on

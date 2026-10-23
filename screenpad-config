@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+# screenpad-config - configuración del ScreenPad en la pantalla principal
+# kan0p - https://github.com/kan0p/asus-screenpad-linux - GPL-3.0-or-later
+#
+# Edita ~/.config/screenpad/config.toml. El launcher vigila el archivo y aplica los
+# cambios al instante. Las claves que no maneja esta ventana se conservan.
+
+import os, sys, tomllib
+
+import gi
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk
+
+APP_ID = "io.github.kan0p.ScreenPad.Config"
+XDG_CONFIG = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+CONFIG = os.path.join(XDG_CONFIG, "screenpad", "config.toml")
+
+# los mismos valores por omisión que screenpad-launcher
+PREDETERMINADA = {
+    "background_mode": "default",
+    "background_color": "#1b2433",
+    "background": "",
+    "background_blur": 12,
+    "touchpad_return": 4,
+}
+
+
+TIPOS = ("default", "color", "image")
+TIPOS_NOMBRE = {"default": "Predeterminado", "color": "Color", "image": "Imagen"}
+
+
+def leer():
+    try:
+        with open(CONFIG, "rb") as f:
+            return tomllib.load(f)
+    except FileNotFoundError:
+        return {}
+    except (tomllib.TOMLDecodeError, OSError) as e:
+        print(f"screenpad-config: config ilegible ({CONFIG}): {e}", file=sys.stderr)
+        return {}
+
+
+def a_toml(valor):
+    if isinstance(valor, bool):
+        return "true" if valor else "false"
+    if isinstance(valor, (int, float)):
+        return str(valor)
+    if isinstance(valor, list):
+        return "[" + ", ".join(a_toml(v) for v in valor) + "]"
+    texto = str(valor).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{texto}"'
+
+
+def guardar(conf):
+    """Escribe solo claves simples (texto, números, booleanos y listas)."""
+    os.makedirs(os.path.dirname(CONFIG), exist_ok=True)
+    lineas = ["# escrito por screenpad-config; se puede editar a mano"]
+    lineas += [f"{k} = {a_toml(v)}" for k, v in conf.items() if not isinstance(v, dict)]
+    tmp = CONFIG + ".tmp"
+    with open(tmp, "w") as f:
+        f.write("\n".join(lineas) + "\n")
+    os.replace(tmp, CONFIG)
+
+
+class Ventana(Adw.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="ScreenPad", default_width=520,
+                         default_height=560)
+        self.conf = leer()
+        self.listo = False
+
+        pagina = Adw.PreferencesPage()
+        pagina.add(self._grupo_fondo())
+        pagina.add(self._grupo_touchpad())
+
+        vista = Adw.ToolbarView()
+        vista.add_top_bar(Adw.HeaderBar())
+        vista.set_content(pagina)
+        self.set_content(vista)
+        self._mostrar_filas()
+        self.listo = True
+
+    def _valor(self, clave):
+        return self.conf.get(clave, PREDETERMINADA[clave])
+
+    def _grupo_fondo(self):
+        g = Adw.PreferencesGroup(
+            title="Fondo",
+            description="El fondo del launcher; en el touchpad temporal se ve difuminado.")
+
+        self.tipo = Adw.ComboRow(title="Tipo", model=Gtk.StringList.new(
+            [TIPOS_NOMBRE[t] for t in TIPOS]))
+        modo = self._valor("background_mode")
+        self.tipo.set_selected(TIPOS.index(modo) if modo in TIPOS else 0)
+        self.tipo.connect("notify::selected", self._cambio_tipo)
+        g.add(self.tipo)
+
+        self.fila_color = Adw.ActionRow(title="Color")
+        rgba = Gdk.RGBA()
+        if not rgba.parse(str(self._valor("background_color"))):
+            rgba.parse(PREDETERMINADA["background_color"])
+        self.boton_color = Gtk.ColorDialogButton(dialog=Gtk.ColorDialog(with_alpha=False),
+                                                 rgba=rgba, valign=Gtk.Align.CENTER)
+        self.boton_color.connect("notify::rgba", self._cambio_color)
+        self.fila_color.add_suffix(self.boton_color)
+        g.add(self.fila_color)
+
+        self.fila_imagen = Adw.ActionRow(title="Imagen")
+        self._mostrar_ruta()
+        elegir = Gtk.Button(label="Elegir…", valign=Gtk.Align.CENTER)
+        elegir.connect("clicked", self._elegir_imagen)
+        self.fila_imagen.add_suffix(elegir)
+        g.add(self.fila_imagen)
+
+        self.fila_blur = Adw.SpinRow.new_with_range(0, 60, 1)
+        self.fila_blur.set_title("Difuminado")
+        self.fila_blur.set_subtitle("en el touchpad temporal, en píxeles")
+        self.fila_blur.set_value(self._entero("background_blur"))
+        self.fila_blur.connect("notify::value",
+                               lambda f, _p: self._poner("background_blur", int(f.get_value())))
+        g.add(self.fila_blur)
+        return g
+
+    def _grupo_touchpad(self):
+        g = Adw.PreferencesGroup(
+            title="Touchpad temporal",
+            description="Se entra y se sale tocando con cuatro dedos.")
+        fila = Adw.SpinRow.new_with_range(0, 60, 1)
+        fila.set_title("Volver al launcher tras")
+        fila.set_subtitle("segundos sin tocar; 0 = no volver solo")
+        fila.set_value(self._entero("touchpad_return"))
+        fila.connect("notify::value",
+                     lambda f, _p: self._poner("touchpad_return", int(f.get_value())))
+        g.add(fila)
+        return g
+
+    def _entero(self, clave):
+        try:
+            return int(self._valor(clave))
+        except (TypeError, ValueError):
+            return PREDETERMINADA[clave]
+
+    def _mostrar_filas(self):
+        tipo = TIPOS[self.tipo.get_selected()]
+        self.fila_color.set_visible(tipo == "color")
+        self.fila_imagen.set_visible(tipo == "image")
+        self.fila_blur.set_visible(tipo == "image")
+
+    def _mostrar_ruta(self):
+        ruta = str(self._valor("background"))
+        self.fila_imagen.set_subtitle(os.path.basename(ruta) if ruta else "sin imagen")
+
+    def _poner(self, clave, valor):
+        if not self.listo:
+            return
+        self.conf[clave] = valor
+        try:
+            guardar(self.conf)
+        except OSError as e:
+            print(f"screenpad-config: no se pudo guardar: {e}", file=sys.stderr)
+
+    def _cambio_tipo(self, fila, _p):
+        self._mostrar_filas()
+        self._poner("background_mode", TIPOS[fila.get_selected()])
+
+    def _cambio_color(self, boton, _p):
+        c = boton.get_rgba()
+        self._poner("background_color", "#{:02x}{:02x}{:02x}".format(
+            round(c.red * 255), round(c.green * 255), round(c.blue * 255)))
+
+    def _elegir_imagen(self, _b):
+        filtro = Gtk.FileFilter(name="Imágenes")
+        filtro.add_mime_type("image/*")
+        filtros = Gio.ListStore.new(Gtk.FileFilter)
+        filtros.append(filtro)
+        dialogo = Gtk.FileDialog(title="Imagen de fondo", filters=filtros)
+        dialogo.open(self, None, self._imagen_elegida)
+
+    def _imagen_elegida(self, dialogo, res):
+        try:
+            archivo = dialogo.open_finish(res)
+        except GLib.Error:
+            return                  # cancelado
+        if archivo and archivo.get_path():
+            self._poner("background", archivo.get_path())
+            self._mostrar_ruta()
+
+
+class Config(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+
+    def do_activate(self):
+        ventana = self.get_active_window() or Ventana(self)
+        ventana.present()
+
+
+if __name__ == "__main__":
+    sys.exit(Config().run(sys.argv))
