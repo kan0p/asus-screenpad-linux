@@ -18,12 +18,19 @@ systemctl is-enabled --quiet screenpad.service 2>/dev/null && primera=0
 install -Dm755 screenpad /usr/local/bin/screenpad
 install -Dm644 edid/ux580-tsb-fixed.bin /usr/local/lib/screenpad/ux580-tsb-fixed.bin
 install -Dm644 systemd/screenpad.service /etc/systemd/system/screenpad.service
-printf 'acpi_call\ni2c-dev\n' > /etc/modules-load.d/screenpad.conf
+printf 'acpi_call\ni2c-dev\nuinput\n' > /etc/modules-load.d/screenpad.conf
 
 # sesión: modos y Fn+F6
 install -Dm755 screenpadd /usr/local/bin/screenpadd
 install -Dm755 screenpadctl /usr/local/bin/screenpadctl
 install -Dm644 systemd/screenpadd.service /etc/systemd/user/screenpadd.service
+
+# teclado numérico virtual de Number Key (root, socket solo para el usuario)
+modprobe uinput 2>/dev/null || true
+install -Dm755 screenpad-numpad /usr/local/bin/screenpad-numpad
+install -Dm644 systemd/screenpad-numpad.service /etc/systemd/system/screenpad-numpad.service
+sed "s/^SocketUser=USUARIO$/SocketUser=$USUARIO/" systemd/screenpad-numpad.socket \
+    | install -Dm644 /dev/stdin /etc/systemd/system/screenpad-numpad.socket
 
 # launcher y configuración
 install -Dm755 screenpad-launcher /usr/local/bin/screenpad-launcher
@@ -55,6 +62,8 @@ udevadm trigger --action=change --subsystem-match=input
 
 systemctl daemon-reload
 systemctl enable screenpad.service
+systemctl enable screenpad-numpad.socket screenpad-numpad.service
+systemctl restart screenpad-numpad.socket screenpad-numpad.service
 [ $primera = 1 ] && /usr/local/bin/screenpad on
 
 if systemctl --user -M "$USUARIO@" daemon-reload 2>/dev/null; then
@@ -63,4 +72,5 @@ if systemctl --user -M "$USUARIO@" daemon-reload 2>/dev/null; then
 else
     echo "activa los servicios de sesión con: systemctl --user enable --now screenpadd screenpad-launcher"
 fi
+command -v wtype > /dev/null || echo "aviso: Quick Key necesita wtype"
 echo "Instalación completa. Fn+F6 cambia el modo del ScreenPad."

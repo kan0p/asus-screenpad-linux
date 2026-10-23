@@ -7,9 +7,12 @@ if [ -n "$USUARIO" ]; then
     systemctl --user -M "$USUARIO@" disable --now screenpad-launcher.service screenpadd.service 2>/dev/null || true
 fi
 systemctl disable --now screenpad.service 2>/dev/null || true
+systemctl disable --now screenpad-numpad.service screenpad-numpad.socket 2>/dev/null || true
 /usr/local/bin/screenpad off 2>/dev/null || true
 rm -f /usr/local/bin/screenpad /usr/local/bin/screenpadd /usr/local/bin/screenpadctl
 rm -f /usr/local/bin/screenpad-launcher /usr/local/bin/screenpad-config
+rm -f /usr/local/bin/screenpad-numpad /etc/systemd/system/screenpad-numpad.service
+rm -f /etc/systemd/system/screenpad-numpad.socket
 rm -f /usr/local/share/applications/io.github.kan0p.ScreenPad.Config.desktop
 rm -rf /usr/local/share/screenpad
 rm -f /etc/systemd/system/screenpad.service /etc/systemd/user/screenpadd.service

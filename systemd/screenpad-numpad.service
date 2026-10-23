@@ -1,0 +1,29 @@
+[Unit]
+Description=Teclado numérico virtual del ScreenPad (Number Key)
+Requires=screenpad-numpad.socket
+After=screenpad-numpad.socket systemd-modules-load.service
+
+[Service]
+ExecStart=/usr/local/bin/screenpad-numpad
+Restart=on-failure
+RestartSec=2
+# solo necesita /dev/uinput, leer los LED de Bloq Num en /sys y el socket
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+DevicePolicy=closed
+DeviceAllow=/dev/uinput rw
+DeviceAllow=char-input r
+CapabilityBoundingSet=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

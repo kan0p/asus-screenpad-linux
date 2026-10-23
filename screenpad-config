@@ -23,12 +23,53 @@ PREDETERMINADA = {
     "background_color": "#1b2433",
     "background": "",
     "background_blur": 12,
+    "background_dim": 0,
     "touchpad_return": 4,
 }
 
 
+# los mismos atajos por omisión que screenpad-launcher: [texto, ícono, combinación]
+ATAJOS = [
+    ["Copiar", "edit-copy-symbolic", "ctrl+c"],
+    ["Pegar", "edit-paste-symbolic", "ctrl+v"],
+    ["Cortar", "edit-cut-symbolic", "ctrl+x"],
+    ["Deshacer", "edit-undo-symbolic", "ctrl+z"],
+    ["Rehacer", "edit-redo-symbolic", "ctrl+shift+z"],
+    ["Seleccionar todo", "edit-select-all-symbolic", "ctrl+a"],
+    ["Guardar", "document-save-symbolic", "ctrl+s"],
+    ["Buscar", "edit-find-symbolic", "ctrl+f"],
+    ["Nueva pestaña", "tab-new-symbolic", "ctrl+t"],
+    ["Cerrar pestaña", "window-close-symbolic", "ctrl+w"],
+    ["Captura", "applets-screenshooter-symbolic", "Print"],
+    ["Escape", "edit-clear-symbolic", "Escape"],
+]
+MAX_ATAJOS = 16
+ICONOS_ATAJO = [
+    "edit-copy-symbolic", "edit-paste-symbolic", "edit-cut-symbolic", "edit-undo-symbolic",
+    "edit-redo-symbolic", "edit-select-all-symbolic", "document-save-symbolic",
+    "edit-find-symbolic", "tab-new-symbolic", "window-close-symbolic",
+    "applets-screenshooter-symbolic", "edit-clear-symbolic", "edit-delete-symbolic",
+    "document-new-symbolic", "document-open-symbolic", "folder-new-symbolic",
+    "printer-symbolic", "view-refresh-symbolic", "zoom-in-symbolic", "zoom-out-symbolic",
+    "media-playback-start-symbolic", "audio-volume-muted-symbolic", "go-home-symbolic",
+    "system-search-symbolic", "input-keyboard-symbolic", "starred-symbolic",
+]
+MODIFICADORES = [(Gdk.ModifierType.CONTROL_MASK, "ctrl"), (Gdk.ModifierType.SHIFT_MASK, "shift"),
+                 (Gdk.ModifierType.ALT_MASK, "alt"), (Gdk.ModifierType.SUPER_MASK, "super")]
+TECLAS_MODIFICADORAS = {
+    Gdk.KEY_Shift_L, Gdk.KEY_Shift_R, Gdk.KEY_Control_L, Gdk.KEY_Control_R,
+    Gdk.KEY_Alt_L, Gdk.KEY_Alt_R, Gdk.KEY_Super_L, Gdk.KEY_Super_R, Gdk.KEY_Meta_L,
+    Gdk.KEY_Meta_R, Gdk.KEY_ISO_Level3_Shift, Gdk.KEY_Caps_Lock,
+}
+
 TIPOS = ("default", "color", "image")
 TIPOS_NOMBRE = {"default": "Predeterminado", "color": "Color", "image": "Imagen"}
+
+
+def combinacion_legible(texto):
+    """'ctrl+shift+z' -> 'Ctrl+Shift+Z'."""
+    partes = str(texto).split("+")
+    return "+".join(p.upper() if len(p) == 1 else p[:1].upper() + p[1:] for p in partes)
 
 
 def leer():
@@ -66,14 +107,15 @@ def guardar(conf):
 
 class Ventana(Adw.ApplicationWindow):
     def __init__(self, app):
-        super().__init__(application=app, title="ScreenPad", default_width=520,
-                         default_height=560)
+        super().__init__(application=app, title="ScreenPad", default_width=560,
+                         default_height=720)
         self.conf = leer()
         self.listo = False
 
         pagina = Adw.PreferencesPage()
         pagina.add(self._grupo_fondo())
         pagina.add(self._grupo_touchpad())
+        pagina.add(self._grupo_atajos())
 
         vista = Adw.ToolbarView()
         vista.add_top_bar(Adw.HeaderBar())
@@ -121,6 +163,14 @@ class Ventana(Adw.ApplicationWindow):
         self.fila_blur.connect("notify::value",
                                lambda f, _p: self._poner("background_blur", int(f.get_value())))
         g.add(self.fila_blur)
+
+        atenuar = Adw.SpinRow.new_with_range(0, 80, 5)
+        atenuar.set_title("Oscurecer fondo")
+        atenuar.set_subtitle("en %; ayuda a leer los nombres sobre imágenes claras")
+        atenuar.set_value(self._entero("background_dim"))
+        atenuar.connect("notify::value",
+                        lambda f, _p: self._poner("background_dim", int(f.get_value())))
+        g.add(atenuar)
         return g
 
     def _grupo_touchpad(self):
@@ -135,6 +185,84 @@ class Ventana(Adw.ApplicationWindow):
                      lambda f, _p: self._poner("touchpad_return", int(f.get_value())))
         g.add(fila)
         return g
+
+    # ----- Quick Key ---------------------------------------------------------
+
+    def _grupo_atajos(self):
+        self.grupo_atajos = Adw.PreferencesGroup(
+            title="Quick Key",
+            description=f"Atajos que se envían a la app activa; hasta {MAX_ATAJOS}.")
+        restablecer = Gtk.Button(label="Restablecer", valign=Gtk.Align.CENTER,
+                                 css_classes=["flat"])
+        restablecer.connect("clicked", lambda _b: self._guardar_atajos(None))
+        self.grupo_atajos.set_header_suffix(restablecer)
+        atajos = self.conf.get("quick_keys")
+        self.atajos = [list(a) for a in atajos] if isinstance(atajos, list) and atajos else \
+            [list(a) for a in ATAJOS]
+        self.filas_atajos = []
+        self._llenar_atajos()
+        return self.grupo_atajos
+
+    def _llenar_atajos(self):
+        for fila in self.filas_atajos:
+            self.grupo_atajos.remove(fila)
+        self.filas_atajos = []
+        for i, (texto, icono, combinacion) in enumerate(self.atajos):
+            fila = Adw.ActionRow(title=texto, subtitle=combinacion_legible(combinacion))
+            fila.add_prefix(Gtk.Image.new_from_icon_name(icono or "input-keyboard-symbolic"))
+            for nombre, ayuda, accion, activo in (
+                    ("go-up-symbolic", "Subir", lambda _b, i=i: self._mover_atajo(i, -1), i > 0),
+                    ("go-down-symbolic", "Bajar", lambda _b, i=i: self._mover_atajo(i, 1),
+                     i < len(self.atajos) - 1),
+                    ("document-edit-symbolic", "Editar", lambda _b, i=i: self._editar_atajo(i), True),
+                    ("user-trash-symbolic", "Quitar", lambda _b, i=i: self._quitar_atajo(i), True)):
+                b = Gtk.Button(icon_name=nombre, tooltip_text=ayuda, valign=Gtk.Align.CENTER,
+                               css_classes=["flat"], sensitive=activo)
+                b.connect("clicked", accion)
+                fila.add_suffix(b)
+            self.grupo_atajos.add(fila)
+            self.filas_atajos.append(fila)
+        if len(self.atajos) < MAX_ATAJOS:
+            agregar = Adw.ButtonRow(title="Agregar atajo", start_icon_name="list-add-symbolic")
+            agregar.connect("activated", lambda _f: self._editar_atajo(None))
+            self.grupo_atajos.add(agregar)
+            self.filas_atajos.append(agregar)
+
+    def _guardar_atajos(self, atajos):
+        """None vuelve a los atajos por omisión."""
+        self.atajos = [list(a) for a in (atajos if atajos is not None else ATAJOS)]
+        if atajos is None:
+            self.conf.pop("quick_keys", None)
+            self._poner_todo()
+        else:
+            self._poner("quick_keys", self.atajos)
+        self._llenar_atajos()
+
+    def _mover_atajo(self, i, paso):
+        a = list(self.atajos)
+        a.insert(i + paso, a.pop(i))
+        self._guardar_atajos(a)
+
+    def _quitar_atajo(self, i):
+        self._guardar_atajos(self.atajos[:i] + self.atajos[i + 1:])
+
+    def _editar_atajo(self, i):
+        actual = self.atajos[i] if i is not None else ["", "input-keyboard-symbolic", ""]
+        DialogoAtajo(actual, lambda nuevo: self._atajo_editado(i, nuevo)).present(self)
+
+    def _atajo_editado(self, i, nuevo):
+        a = list(self.atajos)
+        if i is None:
+            a.append(nuevo)
+        else:
+            a[i] = nuevo
+        self._guardar_atajos(a)
+
+    def _poner_todo(self):
+        try:
+            guardar(self.conf)
+        except OSError as e:
+            print(f"screenpad-config: no se pudo guardar: {e}", file=sys.stderr)
 
     def _entero(self, clave):
         try:
@@ -186,6 +314,101 @@ class Ventana(Adw.ApplicationWindow):
         if archivo and archivo.get_path():
             self._poner("background", archivo.get_path())
             self._mostrar_ruta()
+
+
+class DialogoAtajo(Adw.Dialog):
+    """Nombre, ícono y combinación de un atajo. La combinación se graba presionándola."""
+
+    def __init__(self, atajo, al_guardar):
+        super().__init__(title="Atajo", content_width=460)
+        texto, icono, combinacion = atajo
+        self.al_guardar = al_guardar
+        self.icono = icono if icono in ICONOS_ATAJO else ICONOS_ATAJO[0]
+        self.combinacion = combinacion
+        self.grabando = False
+
+        self.guardar_b = Gtk.Button(label="Guardar", css_classes=["suggested-action"])
+        self.guardar_b.connect("clicked", self._guardar)
+        cabecera = Adw.HeaderBar()
+        cabecera.pack_end(self.guardar_b)
+
+        datos = Adw.PreferencesGroup()
+        self.nombre = Adw.EntryRow(title="Nombre", text=texto)
+        self.nombre.connect("changed", lambda _e: self._validar())
+        datos.add(self.nombre)
+        self.fila_comb = Adw.ActionRow(title="Combinación")
+        self.grabar_b = Gtk.Button(label="Grabar", valign=Gtk.Align.CENTER)
+        self.grabar_b.connect("clicked", self._grabar)
+        self.fila_comb.add_suffix(self.grabar_b)
+        datos.add(self.fila_comb)
+
+        iconos = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.SINGLE, max_children_per_line=7,
+                             min_children_per_line=7, homogeneous=True, row_spacing=6,
+                             column_spacing=6)
+        for nombre in ICONOS_ATAJO:
+            img = Gtk.Image.new_from_icon_name(nombre)
+            img.set_pixel_size(24)
+            img.set_margin_top(8)
+            img.set_margin_bottom(8)
+            iconos.append(img)
+            if nombre == self.icono:
+                iconos.select_child(iconos.get_child_at_index(ICONOS_ATAJO.index(nombre)))
+        iconos.connect("selected-children-changed", self._icono_elegido)
+        grupo_iconos = Adw.PreferencesGroup(title="Ícono")
+        grupo_iconos.add(iconos)
+
+        pagina = Adw.PreferencesPage()
+        pagina.add(datos)
+        pagina.add(grupo_iconos)
+        vista = Adw.ToolbarView(content=pagina)
+        vista.add_top_bar(cabecera)
+        self.set_child(vista)
+
+        teclas = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
+        teclas.connect("key-pressed", self._tecla)
+        self.add_controller(teclas)
+        self._mostrar_combinacion()
+
+    def _mostrar_combinacion(self):
+        if self.grabando:
+            self.fila_comb.set_subtitle("Presiona la combinación…")
+        else:
+            self.fila_comb.set_subtitle(combinacion_legible(self.combinacion)
+                                        if self.combinacion else "sin combinación")
+        self._validar()
+
+    def _validar(self):
+        self.guardar_b.set_sensitive(bool(self.nombre.get_text().strip())
+                                     and bool(self.combinacion) and not self.grabando)
+
+    def _grabar(self, _b):
+        self.grabando = True
+        self.grabar_b.set_sensitive(False)
+        self._mostrar_combinacion()
+
+    def _tecla(self, _c, keyval, _keycode, estado):
+        if not self.grabando:
+            return False
+        if keyval in TECLAS_MODIFICADORAS:
+            return True
+        mods = [nombre for mascara, nombre in MODIFICADORES if estado & mascara]
+        tecla = Gdk.keyval_name(Gdk.keyval_to_lower(keyval))
+        if not tecla:
+            return True
+        self.combinacion = "+".join(mods + [tecla])
+        self.grabando = False
+        self.grabar_b.set_sensitive(True)
+        self._mostrar_combinacion()
+        return True
+
+    def _icono_elegido(self, caja):
+        elegidos = caja.get_selected_children()
+        if elegidos:
+            self.icono = ICONOS_ATAJO[elegidos[0].get_index()]
+
+    def _guardar(self, _b):
+        self.al_guardar([self.nombre.get_text().strip(), self.icono, self.combinacion])
+        self.close()
 
 
 class Config(Adw.Application):

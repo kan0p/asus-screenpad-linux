@@ -33,6 +33,7 @@ Si no puede leer el EDID, usa la última copia válida que guardó en `/var/lib/
 - debugfs montado en `/sys/kernel/debug` (casi todas las distros lo montan por defecto)
 - Para los modos: `python-evdev` y `python-gobject`
 - Para el launcher y su configuración: `gtk4`, `gtk4-layer-shell` y `libadwaita`
+- Para Quick Key: `wtype` (usa el teclado virtual de Wayland; no funciona en GNOME)
 
 ## Instalación
 
@@ -89,22 +90,47 @@ El brillo se maneja por WMI y no por `/sys/class/backlight`. En 0 apaga solo la 
 
 ## Launcher
 
-`screenpad-launcher` es la pantalla del modo `launcher`: hora y fecha, una cuadrícula de 4×2 con páginas y una barra con touchpad, inicio y Control Center. El nodo táctil del panel nunca emite, así que el launcher lee el pad con evdev, lo toma en exclusiva y traduce cada toque a la posición en pantalla. No depende del compositor.
+`screenpad-launcher` es la pantalla del modo `launcher`: hora y fecha, una cuadrícula de 4×2 con páginas y una barra con touchpad, todas las apps (o inicio, fuera del inicio) y Control Center. El nodo táctil del panel nunca emite, así que el launcher lee el pad con evdev, lo toma en exclusiva y traduce cada toque a la posición en pantalla. No depende del compositor.
 
 - **Tocar** abre la app.
 - **Mantener presionado** levanta el mosaico: se arrastra para reordenar, al borde para cambiar de página, y sobre la barra roja para quitarlo del inicio.
 - **Deslizar de lado** cambia de página.
-- **Todas las apps** lista todo lo instalado. Mantener presionada una app la agrega al inicio o la quita.
+- **Todas las apps**, el botón central de la barra, lista las utilidades y todo lo instalado. Mantener presionado un elemento lo agrega al inicio o lo quita.
 - **Cuatro dedos** (un toque corto) entran a un touchpad temporal: el fondo difuminado con la estela de los dedos y el pad libre para mover el cursor. Se vuelve con cuatro dedos o tras unos segundos sin tocar.
 
-El botón de Control Center abre por ahora `screenpad-config` en la pantalla principal: el fondo (predeterminado, color o imagen), el difuminado del touchpad temporal y los segundos para volver. Escribe en `config.toml`, y el launcher aplica los cambios al instante:
+### Control Center y utilidades
+
+El **Control Center** sube desde la barra: brillo del pad (se arrastra con el dedo), Number Key, Quick Key, touchpad temporal, bloquear la sesión, apagar el pad y ajustes.
+
+- **Number Key**: teclado numérico que escribe en la app activa.
+- **Quick Key**: hasta 16 atajos (copiar, pegar, deshacer, captura…) que se mandan a la app activa con `wtype`.
+- **Calculadora**: `%` es porcentaje; **Insertar** escribe el resultado en la app activa.
+
+Las tres son mosaicos que se pueden poner en el inicio.
+
+### Teclado numérico virtual
+
+Algunas apps (Word online, por ejemplo) ignoran las teclas del teclado virtual de Wayland. Por eso Number Key y el botón Insertar usan `screenpad-numpad`, un servicio de sistema que crea con `uinput` un teclado que **solo tiene las teclas del teclado numérico**: 0–9, `/ * - +`, decimal, Enter y Borrar. Las apps lo ven como un teclado numérico USB.
+
+- Recibe los pedidos por `/run/screenpad-numpad.sock`, que systemd crea con permisos solo para el usuario que instaló.
+- Descarta cualquier otra tecla, así que no puede escribir texto ni ejecutar atajos.
+- Corre sin red, con el sistema de archivos en solo lectura y con acceso únicamente a `/dev/uinput` y a los dispositivos de entrada.
+- Con Bloq Num apagado lo enciende solo durante cada envío. La tecla decimal escribe lo que defina la distribución de teclado (punto en la latinoamericana).
+
+Si el servicio no está, el launcher usa `wtype`.
+
+### Configuración
+
+`screenpad-config` (Ajustes en el Control Center, o "ScreenPad" en el menú de apps) se abre en la pantalla principal. Permite elegir el fondo, el difuminado, cuánto oscurecerlo, los segundos para volver del touchpad temporal y los atajos de Quick Key: agregar, editar, reordenar, quitar o restablecer, grabando la combinación con el teclado. Escribe en `config.toml`, y el launcher aplica los cambios al instante:
 
 ```toml
 background_mode = "default"   # "default", "color" o "image"
 background_color = "#1b2433"
 background = "~/Imágenes/fondo.jpg"
 background_blur = 12          # px, solo en el touchpad temporal
+background_dim = 0            # % de negro sobre el fondo
 touchpad_return = 4           # s sin tocar para volver al launcher; 0 = nunca
+quick_keys = [["Copiar", "edit-copy-symbolic", "ctrl+c"], ["Captura", "applets-screenshooter-symbolic", "Print"]]
 ```
 
 El orden del inicio se guarda en `~/.local/state/screenpad/inicio.json`.
@@ -156,8 +182,9 @@ screenpadctl brightness 180  brillo de los modos encendidos (1-255)
 - `screenpadctl`: control de `screenpadd` desde la terminal
 - `screenpad-launcher`: el launcher (GTK4 y gtk4-layer-shell)
 - `screenpad-config`: la configuración en la pantalla principal (libadwaita)
+- `screenpad-numpad`: teclado numérico virtual de Number Key (root, `python-evdev`)
 - `icons/`: mosaicos e íconos de interfaz del launcher
-- `systemd/`: `screenpad.service` (sistema), `screenpadd.service` y `screenpad-launcher.service` (sesión)
+- `systemd/`: `screenpad.service` y `screenpad-numpad.socket`/`.service` (sistema), `screenpadd.service` y `screenpad-launcher.service` (sesión)
 - `udev/`, `sudoers/`: permisos y el cambio de Fn+F6 a `KEY_MACRO1`
 - `install.sh`, `uninstall.sh`
 - `edid/ux580-tsb-original.bin`: el EDID tal como sale del puente, con el checksum malo

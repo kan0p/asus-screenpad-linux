@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+# screenpad-numpad - teclado numérico virtual para Number Key
+# kan0p - https://github.com/kan0p/asus-screenpad-linux - GPL-3.0-or-later
+#
+# Crea con uinput un teclado que solo tiene las teclas del teclado numérico y las
+# presiona a pedido del launcher. A diferencia del teclado virtual de Wayland, las
+# apps ven teclas físicas reales (algunos navegadores ignoran las de wtype).
+#
+# Corre como root; recibe los pedidos por un socket que systemd abre solo para el
+# usuario de la sesión (screenpad-numpad.socket). Cada línea es el nombre de una
+# tecla de TECLAS; cualquier otra cosa se descarta.
+#
+# uso: screenpad-numpad [RUTA_SOCKET]   (sin argumento, el socket lo pasa systemd)
+
+import glob, os, selectors, socket, sys, time
+
+from evdev import UInput, ecodes as e
+
+TECLAS = {
+    "KP0": e.KEY_KP0, "KP1": e.KEY_KP1, "KP2": e.KEY_KP2, "KP3": e.KEY_KP3,
+    "KP4": e.KEY_KP4, "KP5": e.KEY_KP5, "KP6": e.KEY_KP6, "KP7": e.KEY_KP7,
+    "KP8": e.KEY_KP8, "KP9": e.KEY_KP9, "KPDOT": e.KEY_KPDOT,
+    "KPSLASH": e.KEY_KPSLASH, "KPASTERISK": e.KEY_KPASTERISK,
+    "KPMINUS": e.KEY_KPMINUS, "KPPLUS": e.KEY_KPPLUS, "KPENTER": e.KEY_KPENTER,
+    "BACKSPACE": e.KEY_BACKSPACE,
+}
+# con Bloq Num apagado estas teclas son Inicio, Fin, Suprimir...
+CON_BLOQNUM = {n for n in TECLAS if n[2:].isdigit() or n == "KPDOT"}
+MAX_LINEA = 32
+MAX_POR_SEGUNDO = 50
+# El LED de Bloq Num se actualiza un poco después de cada cambio: durante este tiempo
+# vale el estado que dejó el propio servicio.
+CONFIAR_ESTADO_S = 0.5
+
+
+def log(*a):
+    print("screenpad-numpad:", *a, file=sys.stderr, flush=True)
+
+
+def bloqnum():
+    """Estado de Bloq Num según los LED que el compositor fija en los teclados."""
+    estados = []
+    for led in glob.glob("/sys/class/leds/input*::numlock/brightness"):
+        try:
+            with open(led) as f:
+                estados.append(f.read().strip() != "0")
+        except OSError:
+            pass
+    return any(estados) if estados else True
+
+
+class Teclado:
+    def __init__(self):
+        self.ui = UInput({e.EV_KEY: [*TECLAS.values(), e.KEY_NUMLOCK]},
+                         name="ScreenPad Number Key")
+        self.recientes = []
+        self.estado = None          # (bloq num, momento) que dejó el último lote
+
+    def tocar(self, codigo):
+        self.ui.write(e.EV_KEY, codigo, 1)
+        self.ui.syn()
+        self.ui.write(e.EV_KEY, codigo, 0)
+        self.ui.syn()
+
+    def presionar(self, nombres):
+        """Un lote de teclas; Bloq Num se enciende una sola vez si hace falta."""
+        ahora = time.monotonic()
+        self.recientes = [t for t in self.recientes if ahora - t < 1]
+        nombres = nombres[:max(0, MAX_POR_SEGUNDO - len(self.recientes))]
+        if not nombres:
+            return
+        self.recientes += [ahora] * len(nombres)
+        if self.estado and ahora - self.estado[1] < CONFIAR_ESTADO_S:
+            encendido = self.estado[0]
+        else:
+            encendido = bloqnum()
+        encender = not encendido and any(n in CON_BLOQNUM for n in nombres)
+        if encender:
+            self.tocar(e.KEY_NUMLOCK)
+        for n in nombres:
+            self.tocar(TECLAS[n])
+        if encender:
+            self.tocar(e.KEY_NUMLOCK)
+        self.estado = (encendido, time.monotonic())
+
+
+def socket_de_escucha():
+    if len(sys.argv) > 1:
+        ruta = sys.argv[1]
+        if os.path.exists(ruta):
+            os.unlink(ruta)
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.bind(ruta)
+        os.chmod(ruta, 0o600)
+        s.listen()
+        return s
+    if os.environ.get("LISTEN_PID") != str(os.getpid()) or os.environ.get("LISTEN_FDS") != "1":
+        sys.exit("screenpad-numpad: falta el socket de systemd (o una ruta como argumento)")
+    return socket.socket(fileno=3)
+
+
+def main():
+    teclado = Teclado()
+    escucha = socket_de_escucha()
+    escucha.setblocking(False)
+    sel = selectors.DefaultSelector()
+    sel.register(escucha, selectors.EVENT_READ)
+    pendientes = {}
+    log("listo")
+    while True:
+        for clave, _ in sel.select():
+            s = clave.fileobj
+            if s is escucha:
+                cliente, _ = escucha.accept()
+                cliente.setblocking(False)
+                sel.register(cliente, selectors.EVENT_READ)
+                pendientes[cliente] = b""
+                continue
+            try:
+                datos = s.recv(256)
+            except OSError:
+                datos = b""
+            if not datos:
+                sel.unregister(s)
+                pendientes.pop(s, None)
+                s.close()
+                continue
+            buf = pendientes[s] + datos
+            *lineas, resto = buf.split(b"\n")
+            pendientes[s] = resto[-MAX_LINEA:]
+            lote = [n for n in (l.strip().decode("ascii", "replace") for l in lineas)
+                    if n in TECLAS]
+            if lote:
+                teclado.presionar(lote)
+
+
+if __name__ == "__main__":
+    main()

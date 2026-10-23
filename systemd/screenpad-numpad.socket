@@ -1,0 +1,11 @@
+[Unit]
+Description=Socket del teclado numérico virtual del ScreenPad
+
+[Socket]
+ListenStream=/run/screenpad-numpad.sock
+# install.sh reemplaza USUARIO: solo ese usuario puede pedir teclas
+SocketUser=USUARIO
+SocketMode=0600
+
+[Install]
+WantedBy=sockets.target

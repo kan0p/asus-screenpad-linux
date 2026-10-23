@@ -28,7 +28,7 @@ if LIB_LAYER not in os.environ.get("LD_PRELOAD", ""):
     os.environ["LD_PRELOAD"] = " ".join(filter(None, [LIB_LAYER, os.environ.get("LD_PRELOAD")]))
     os.execv(sys.executable, [sys.executable, *sys.argv])
 
-import json, signal, time, tomllib
+import ast, json, locale, operator, re, shutil, signal, socket, time, tomllib
 
 import evdev
 from evdev import ecodes
@@ -77,13 +77,12 @@ ICONOS = next((d for d in (os.environ.get("SCREENPAD_ICONS"),
 
 # apps del inicio si el usuario todavía no eligió: las primeras que estén instaladas
 INICIO_PREDETERMINADO = [
+    "screenpad:numeros", "screenpad:atajos", "screenpad:calculadora",
     "firefox.desktop", "chromium.desktop", "com.system76.CosmicFiles.desktop",
     "org.gnome.Nautilus.desktop", "com.system76.CosmicTerm.desktop",
     "com.system76.CosmicEdit.desktop", "com.system76.CosmicSettings.desktop",
     "org.gnome.Calculator.desktop",
 ]
-
-ID_APPS = "screenpad:apps"     # el mosaico "Todas las apps"; se mueve pero no se quita
 
 CONFIG_PREDETERMINADA = {
     "pad_device": "GDX1515:00 27C6:01F4 Touchpad",
@@ -92,7 +91,9 @@ CONFIG_PREDETERMINADA = {
     "background_color": "#1b2433",
     "background": "",                # ruta de la imagen
     "background_blur": 12,           # px
+    "background_dim": 0,             # % de negro sobre el fondo
     "touchpad_return": 4,            # s sin tocar para volver al launcher; 0 = nunca
+    "quick_keys": [],                # [texto, ícono, "ctrl+shift+z"]; vacío = ATAJOS
 }
 
 SALIDA_ESTABLE_MS = 1500   # la salida aparece y desaparece varias veces durante un replug
@@ -110,6 +111,41 @@ DIAS = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "doming
 MESES = ("enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
          "septiembre", "octubre", "noviembre", "diciembre")
 
+# mosaicos propios del launcher: id -> (ícono en icons/tiles, nombre, página)
+UTILIDADES = {
+    "screenpad:numeros": ("number-key", "Number Key", "numeros"),
+    "screenpad:atajos": ("quick-key", "Quick Key", "atajos"),
+    "screenpad:calculadora": ("calculator", "Calculadora", "calculadora"),
+}
+PAGINAS_UTILIDAD = {u[2] for u in UTILIDADES.values()}
+
+# Quick Key por omisión: (texto, ícono, combinación)
+ATAJOS = [
+    ("Copiar", "edit-copy-symbolic", "ctrl+c"),
+    ("Pegar", "edit-paste-symbolic", "ctrl+v"),
+    ("Cortar", "edit-cut-symbolic", "ctrl+x"),
+    ("Deshacer", "edit-undo-symbolic", "ctrl+z"),
+    ("Rehacer", "edit-redo-symbolic", "ctrl+shift+z"),
+    ("Seleccionar todo", "edit-select-all-symbolic", "ctrl+a"),
+    ("Guardar", "document-save-symbolic", "ctrl+s"),
+    ("Buscar", "edit-find-symbolic", "ctrl+f"),
+    ("Nueva pestaña", "tab-new-symbolic", "ctrl+t"),
+    ("Cerrar pestaña", "window-close-symbolic", "ctrl+w"),
+    ("Captura", "applets-screenshooter-symbolic", "Print"),
+    ("Escape", "edit-clear-symbolic", "Escape"),
+]
+SOCKET_NUMPAD = "/run/screenpad-numpad.sock"
+TECLA_NUMPAD = {**{str(n): f"KP{n}" for n in range(10)}, ".": "KPDOT", "-": "KPMINUS"}
+KEYSYM_NUMPAD = {**{f"KP{n}": f"KP_{n}" for n in range(10)}, "KPDOT": "KP_Decimal",
+                 "KPSLASH": "KP_Divide", "KPASTERISK": "KP_Multiply",
+                 "KPMINUS": "KP_Subtract", "KPPLUS": "KP_Add", "KPENTER": "KP_Enter",
+                 "BACKSPACE": "BackSpace"}
+MODIFICADORES = {"ctrl": "ctrl", "control": "ctrl", "shift": "shift", "alt": "alt",
+                 "altgr": "altgr", "super": "logo", "logo": "logo", "win": "logo"}
+
+locale.setlocale(locale.LC_NUMERIC, "")
+DECIMAL = locale.localeconv()["decimal_point"] or "."
+
 DEBUG = "--debug" in sys.argv
 
 CSS = b"""
@@ -123,14 +159,17 @@ window.screenpad.invisible { background: transparent; }
 }
 .oscurecer { background-image: linear-gradient(to bottom, transparent 55%, alpha(black, 0.45)); }
 .estado { margin: 50px 77px 0 77px; }
-.reloj { font-size: 100px; font-weight: 300; letter-spacing: -2px; }
-.fecha { font-size: 31px; opacity: 0.8; }
+.reloj { font-size: 100px; font-weight: 300; letter-spacing: -2px;
+         text-shadow: 0 0 18px alpha(black, 0.65), 0 2px 4px alpha(black, 0.5); }
+.fecha { font-size: 31px; opacity: 0.9;
+         text-shadow: 0 0 10px alpha(black, 0.8), 0 1px 3px alpha(black, 0.6); }
 .mosaico { background: none; border: none; box-shadow: none; padding: 0; min-width: 211px;
            outline: none; }
 .mosaico:hover, .mosaico:active { background: none; }
 .mosaico .icono { -gtk-icon-size: 177px; }
 .mosaico.presionado .icono { opacity: 0.7; transform: scale(0.94); }
-.mosaico label { font-size: 28px; font-weight: 500; text-shadow: 0 1px 3px alpha(black, 0.6); }
+.mosaico label { font-size: 28px; font-weight: 500; padding: 3px 16px; border-radius: 20px;
+                 background: alpha(black, 0.35); text-shadow: 0 1px 2px alpha(black, 0.6); }
 .puntos { margin-bottom: 58px; min-height: 13px; }
 .punto { min-width: 13px; min-height: 13px; border-radius: 7px; background: alpha(white, 0.35); }
 .punto.activo { min-width: 38px; background: white; }
@@ -142,8 +181,6 @@ window.screenpad.invisible { background: transparent; }
 .zona-quitar { background: alpha(#e5484d, 0.35); border-top: 1px solid alpha(#ff8a8d, 0.4);
                min-height: 160px; }
 .zona-quitar.encima { background: alpha(#e5484d, 0.75); }
-.zona-quitar.fija { background: alpha(#0a0f1a, 0.8); border-top-color: alpha(white, 0.08); }
-.zona-quitar.fija label { opacity: 0.6; }
 .zona-quitar image { -gtk-icon-size: 64px; }
 .zona-quitar label { font-size: 34px; font-weight: 600; }
 .mosaico.arrastrado { opacity: 0.25; }
@@ -164,11 +201,55 @@ window.screenpad.invisible { background: transparent; }
 .hoja button.principal { background: #4d9bff; }
 .hoja button.presionado { opacity: 0.7; }
 .pista { color: alpha(white, 0.45); font-size: 26px; margin-bottom: 32px; }
+.aviso { background: alpha(#141b2b, 0.95); border-radius: 30px; padding: 22px 40px;
+         margin-top: 40px; font-size: 28px; }
+.teclado { margin: 40px 120px 36px 120px; }
+.velo-paginas { background: alpha(black, 0.5); }
+.tecla { background: alpha(black, 0.4); border: 1px solid alpha(white, 0.14); box-shadow: none;
+         outline: none; border-radius: 30px; color: white; font-size: 54px; font-weight: 500; }
+.tecla.presionado { background: alpha(white, 0.25); }
+.tecla.operador { background: alpha(#2f7bf6, 0.5); border-color: alpha(#8fbcff, 0.3); }
+.tecla.operador.presionado { background: alpha(#2f7bf6, 0.8); }
+.tecla.igual, .tecla.insertar { background: #4d9bff; }
+.tecla.igual.presionado, .tecla.insertar.presionado { background: #2f7bf6; }
+.tecla image { -gtk-icon-size: 64px; }
+.atajos .tecla { font-size: 30px; }
+.atajos .tecla image { -gtk-icon-size: 72px; }
+.calculadora .tecla { font-size: 48px; }
+.insertar { min-height: 120px; font-size: 34px; }
+.insertar image { -gtk-icon-size: 48px; }
+.visor { background: alpha(black, 0.4); border: 1px solid alpha(white, 0.14);
+         border-radius: 30px; padding: 30px 40px; }
+.visor .expr { font-size: 44px; opacity: 0.7; }
+.visor .res { font-size: 110px; font-weight: 300; }
+.velo-centro { background: alpha(black, 0.35); }
+.centro { background: alpha(#141b2b, 0.95); border-radius: 50px; padding: 46px 54px;
+          border: 1px solid alpha(white, 0.1); margin-bottom: 190px; min-width: 1340px; }
+.centro .sol { -gtk-icon-size: 58px; }
+.centro .pct { font-size: 30px; opacity: 0.8; }
+scale.brillo trough { min-height: 20px; border-radius: 10px; background: alpha(white, 0.13); }
+scale.brillo highlight { min-height: 20px; border-radius: 10px;
+                         background-image: linear-gradient(to right, #2F7BF6, #19C2E8); }
+scale.brillo slider { min-width: 54px; min-height: 54px; margin: -17px; border-radius: 27px;
+                      background: white; box-shadow: 0 2px 6px alpha(black, 0.5); border: none; }
+.opcion { background: none; border: none; box-shadow: none; outline: none; padding: 0; }
+.opcion .k { min-width: 134px; min-height: 134px; border-radius: 38px;
+             background: alpha(white, 0.08); }
+.opcion .k image { -gtk-icon-size: 70px; margin: 32px; }
+.opcion .k.peligro { background: alpha(#e5484d, 0.2); }
+.opcion.presionado .k { background: alpha(white, 0.22); }
+.opcion label { font-size: 24px; opacity: 0.85; }
 """
 
 
 def log(*a):
     print("screenpad-launcher:", *a, file=sys.stderr, flush=True)
+
+
+def log_una_vez(conjunto, clave, *a):
+    if clave not in conjunto:
+        conjunto.add(clave)
+        log(*a)
 
 
 def debug(*a):
@@ -189,7 +270,7 @@ def leer_config():
 
 
 def leer_inicio():
-    """Ids del inicio en orden; siempre incluye ID_APPS."""
+    """Ids del inicio en orden."""
     ids = None
     try:
         with open(INICIO) as f:
@@ -201,7 +282,59 @@ def leer_inicio():
     else:
         instaladas = {a.get_id() for a in Gio.AppInfo.get_all()}
         ids = [i for i in INICIO_PREDETERMINADO if i in instaladas]
-    return ids if ID_APPS in ids else ids + [ID_APPS]
+    return ids
+
+
+def combinacion_wtype(texto):
+    """'ctrl+shift+z' -> argumentos de wtype que la presionan y la sueltan."""
+    partes = [p.strip() for p in str(texto).split("+") if p.strip()]
+    if not partes:
+        raise ValueError("combinación vacía")
+    mods = []
+    for p in partes[:-1]:
+        if p.lower() not in MODIFICADORES:
+            raise ValueError(f"modificador desconocido: {p}")
+        mods.append(MODIFICADORES[p.lower()])
+    args = [a for m in mods for a in ("-M", m)]
+    args += ["-k", partes[-1]]
+    args += [a for m in reversed(mods) for a in ("-m", m)]
+    return args
+
+
+OPERACIONES = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+               ast.Div: operator.truediv, ast.USub: operator.neg, ast.UAdd: operator.pos}
+
+
+def evaluar(expr):
+    """Valor de una expresión con + - * / y decimales, o None si no está completa.
+    'n%' es un porcentaje: n/100."""
+    expr = re.sub(r"(\d+(?:\.\d*)?|\.\d+)%", r"(\1/100)", expr).rstrip("+-*/.%")
+    if not expr:
+        return None
+    try:
+        arbol = ast.parse(expr, mode="eval").body
+    except SyntaxError:
+        return None
+
+    def valor(n):
+        if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)):
+            return n.value
+        if isinstance(n, ast.BinOp) and type(n.op) in OPERACIONES:
+            return OPERACIONES[type(n.op)](valor(n.left), valor(n.right))
+        if isinstance(n, ast.UnaryOp) and type(n.op) in OPERACIONES:
+            return OPERACIONES[type(n.op)](valor(n.operand))
+        raise ValueError
+    try:
+        return valor(arbol)
+    except (ValueError, ZeroDivisionError, OverflowError):
+        return None
+
+
+def numero_a_texto(x, decimal):
+    texto = f"{x:.10g}" if isinstance(x, float) else str(x)
+    if "e" not in texto and "." in texto:
+        texto = texto.rstrip("0").rstrip(".")
+    return texto.replace(".", decimal)
 
 
 def guardar_inicio(ids):
@@ -392,7 +525,10 @@ class Pad:
         self.inicio = self.ultimo = pos
         self.movido = False
         self.objetivo = self.launcher.accion_en(*pos)
-        if self.objetivo:
+        if self.objetivo and self.launcher.empezar_deslizable(self.objetivo, pos):
+            self.objetivo = None
+            self.movido = True
+        elif self.objetivo:
             self.objetivo.add_css_class("presionado")
             self.largo = GLib.timeout_add(TOQUE_LARGO_MS, self._toque_largo)
 
@@ -520,6 +656,11 @@ class Launcher(Gtk.Application):
         self.n_paginas = 0
         self.fondos = []            # (Gtk.Stack, Gtk.Picture) de cada fondo
         self.mosaico_id = {}        # nombre del mosaico del inicio -> id de la app
+        self.deslizables = {}       # nombre del widget -> (widget, al_cambiar(fracción))
+        self.brillo = 255
+        self.leyendo_brillo = False
+        self.socket_numpad = None
+        self.avisados = set()
         self.orden = None           # ids del inicio mientras se arrastra
         self.arrastrada = None
         self.espera_borde = 0
@@ -577,18 +718,31 @@ class Launcher(Gtk.Application):
                                  vexpand=True)
         self.paginas.add_named(self._pagina_inicio(), "inicio")
         self.paginas.add_named(self._pagina_apps(), "apps")
+        self.paginas.add_named(self._pagina_numeros(), "numeros")
+        self.paginas.add_named(self._pagina_atajos(), "atajos")
+        self.paginas.add_named(self._pagina_calculadora(), "calculadora")
         caja = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        caja.append(self._estado())
+        self.estado_w = self._estado()
+        self.paginas.connect("notify::visible-child-name", lambda p, _: self.estado_w.set_visible(
+            p.get_visible_child_name() not in PAGINAS_UTILIDAD))
+        caja.append(self.estado_w)
         caja.append(self.paginas)
         caja.append(self._pie())
 
         launcher = Gtk.Overlay()
         launcher.set_child(self._crear_fondo(difuminado=False))
+        launcher.add_overlay(Gtk.Box(css_classes=["atenuar"], can_target=False))
         launcher.add_overlay(Gtk.Box(css_classes=["oscurecer"], can_target=False))
+        velo_paginas = Gtk.Box(css_classes=["velo-paginas"], can_target=False, visible=False)
+        self.paginas.connect("notify::visible-child-name", lambda p, _: velo_paginas.set_visible(
+            p.get_visible_child_name() != "inicio"))
+        launcher.add_overlay(velo_paginas)
         launcher.add_overlay(caja)
         self.capa_arrastre = Gtk.Fixed(can_target=False)
         launcher.add_overlay(self.capa_arrastre)
+        launcher.add_overlay(self._centro())
         launcher.add_overlay(self._hoja())
+        launcher.add_overlay(self._aviso_w())
 
         self.vista = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE)
         self.vista.add_named(launcher, "launcher")
@@ -655,8 +809,9 @@ class Launcher(Gtk.Application):
         mosaicos = []
         for item_id, app in self._items_inicio():
             if app is None:
-                m = self._mosaico_svg("apps", "Todas las apps", lambda: self._ir("apps"),
-                                      lambda: self._arrastrar_inicio(ID_APPS, None))
+                icono, texto, pagina = UTILIDADES[item_id]
+                m = self._mosaico_svg(icono, texto, lambda p=pagina: self._ir(p),
+                                      lambda i=item_id: self._arrastrar_inicio(i, None))
             else:
                 m = self._mosaico_app(app, lambda a: self._arrastrar_inicio(a.get_id(), a))
             self.mosaico_id[m.get_name()] = item_id
@@ -674,10 +829,10 @@ class Launcher(Gtk.Application):
         self._ver_pagina(min(self.pagina, self.n_paginas - 1), animar=False)
 
     def _items_inicio(self):
-        """(id, app) de lo que se muestra en el inicio; app es None para ID_APPS."""
+        """(id, app) de lo que se muestra en el inicio; app es None en las utilidades."""
         items = []
         for item_id in self.orden if self.orden is not None else leer_inicio():
-            if item_id == ID_APPS:
+            if item_id in UTILIDADES:
                 items.append((item_id, None))
                 continue
             try:
@@ -726,7 +881,7 @@ class Launcher(Gtk.Application):
         caja = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=19)
         caja.append(img)
         caja.append(Gtk.Label(label=texto, max_width_chars=14, ellipsize=3,
-                              justify=Gtk.Justification.CENTER))
+                              justify=Gtk.Justification.CENTER, halign=Gtk.Align.CENTER))
         return self._accion(Gtk.Button(child=caja, css_classes=["mosaico"]),
                             al_tocar, al_mantener)
 
@@ -751,8 +906,13 @@ class Launcher(Gtk.Application):
         self._vaciar(self.lista_apps)
         apps = sorted((a for a in Gio.AppInfo.get_all() if a.should_show()),
                       key=lambda a: a.get_display_name().casefold())
+        for item_id, (icono, texto, pagina) in UTILIDADES.items():
+            self.lista_apps.append(self._mosaico_svg(
+                icono, texto, lambda p=pagina: self._ir(p),
+                lambda i=item_id, t=texto: self._menu_item(i, t)))
         for app in apps:
-            self.lista_apps.append(self._mosaico_app(app, self._menu_apps))
+            self.lista_apps.append(self._mosaico_app(
+                app, lambda a: self._menu_item(a.get_id(), a.get_display_name())))
 
     # ----- menú de toque largo -----------------------------------------------
 
@@ -767,12 +927,13 @@ class Launcher(Gtk.Application):
         tarjeta.append(self.hoja_nombre)
         tarjeta.append(self.hoja_boton)
         tarjeta.append(self._accion(Gtk.Button(label="Cancelar"), self._cerrar_hoja))
+        self._accion(tarjeta, lambda: None)    # tocar la tarjeta no la cierra
         self.velo.append(tarjeta)
         self.hoja_accion = None
         return self.velo
 
-    def _mostrar_hoja(self, app, texto, accion):
-        self.hoja_nombre.set_label(app.get_display_name())
+    def _mostrar_hoja(self, nombre, texto, accion):
+        self.hoja_nombre.set_label(nombre)
         self.hoja_boton.set_label(texto)
         self.hoja_accion = accion
         self.velo.set_visible(True)
@@ -786,11 +947,11 @@ class Launcher(Gtk.Application):
     def _cerrar_hoja(self):
         self.velo.set_visible(False)
 
-    def _menu_apps(self, app):
-        if app.get_id() in leer_inicio():
-            self._mostrar_hoja(app, "Quitar del inicio", lambda: self._quitar_inicio(app.get_id()))
+    def _menu_item(self, item_id, nombre):
+        if item_id in leer_inicio():
+            self._mostrar_hoja(nombre, "Quitar del inicio", lambda: self._quitar_inicio(item_id))
         else:
-            self._mostrar_hoja(app, "Agregar al inicio", lambda: self._agregar_inicio(app.get_id()))
+            self._mostrar_hoja(nombre, "Agregar al inicio", lambda: self._agregar_inicio(item_id))
 
     def _agregar_inicio(self, app_id):
         ids = leer_inicio()
@@ -811,20 +972,13 @@ class Launcher(Gtk.Application):
         self.orden = [i for i, _ in self._items_inicio()]
         self.arrastrada = item_id
         if app is None:
-            self.flotante = Gtk.Image.new_from_file(os.path.join(ICONOS, "tiles", "apps.svg"))
+            self.flotante = Gtk.Image.new_from_file(
+                os.path.join(ICONOS, "tiles", UTILIDADES[item_id][0] + ".svg"))
         else:
             self.flotante = Gtk.Image.new_from_gicon(
                 app.get_icon() or Gio.ThemedIcon.new("application-x-executable"))
         self.flotante.add_css_class("flotante")
         self.capa_arrastre.put(self.flotante, *self._esquina_flotante(pos))
-        fija = item_id == ID_APPS
-        self.zona_texto.set_label("Todas las apps no se puede quitar" if fija
-                                  else "Quitar del inicio")
-        self.zona_icono.set_visible(not fija)
-        if fija:
-            self.zona.add_css_class("fija")
-        else:
-            self.zona.remove_css_class("fija")
         self.pie.set_visible_child_name("quitar")
         self._llenar_inicio()
         self.pad.arrastrar(self._mover_arrastre, self._soltar_arrastre)
@@ -847,7 +1001,7 @@ class Launcher(Gtk.Application):
 
     def _mover_arrastre(self, pos):
         self.capa_arrastre.move(self.flotante, *self._esquina_flotante(pos))
-        if self._sobre(pos, "zona-quitar") and self.arrastrada != ID_APPS:
+        if self._sobre(pos, "zona-quitar"):
             self.zona.add_css_class("encima")
         else:
             self.zona.remove_css_class("encima")
@@ -882,13 +1036,322 @@ class Launcher(Gtk.Application):
         self.pie.set_visible_child_name("barra")
         orden, app_id = self.orden, self.arrastrada
         self.orden = self.arrastrada = None
-        if pos is not None and self._sobre(pos, "zona-quitar") and app_id != ID_APPS:
+        if pos is not None and self._sobre(pos, "zona-quitar"):
             orden.remove(app_id)
             debug(f"{app_id} fuera del inicio")
         if pos is not None:
             mostradas = set(orden) | {app_id}
             guardar_inicio(orden + [i for i in leer_inicio() if i not in mostradas])
         self._llenar_inicio()
+
+    # ----- escribir en la app activa ----------------------------------------
+
+    def escribir(self, args):
+        """Manda teclas a la ventana con foco por el teclado virtual de Wayland (wtype)."""
+        if not shutil.which("wtype"):
+            self._avisar("Falta wtype: instálalo para escribir desde el ScreenPad")
+            return
+        debug("wtype", *args)
+        try:
+            Gio.Subprocess.new(["wtype", *args], Gio.SubprocessFlags.STDERR_SILENCE)
+        except GLib.Error as e:
+            log(f"wtype falló: {e.message}")
+
+    def numpad(self, teclas):
+        """Teclas reales del teclado numérico por screenpad-numpad; sin él, wtype."""
+        datos = "".join(t + "\n" for t in teclas).encode()
+        for _ in range(2):
+            if self.socket_numpad is None:
+                try:
+                    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    s.connect(SOCKET_NUMPAD)
+                    self.socket_numpad = s
+                except OSError:
+                    break
+            try:
+                self.socket_numpad.sendall(datos)
+                debug("numpad", *teclas)
+                return
+            except OSError:
+                self.socket_numpad.close()
+                self.socket_numpad = None
+        log_una_vez(self.avisados, "numpad", f"sin {SOCKET_NUMPAD}, se usa wtype")
+        self.escribir([a for t in teclas for a in ("-k", KEYSYM_NUMPAD[t])])
+
+    def _aviso_w(self):
+        self.aviso = Gtk.Label(css_classes=["aviso"], visible=False, can_target=False,
+                               halign=Gtk.Align.CENTER, valign=Gtk.Align.START)
+        self.fin_aviso = 0
+        return self.aviso
+
+    def _avisar(self, texto):
+        self.aviso.set_label(texto)
+        self.aviso.set_visible(True)
+        if self.fin_aviso:
+            GLib.source_remove(self.fin_aviso)
+        self.fin_aviso = GLib.timeout_add_seconds(3, self._ocultar_aviso)
+
+    def _ocultar_aviso(self):
+        self.fin_aviso = 0
+        self.aviso.set_visible(False)
+        return False
+
+    def _tecla(self, al_tocar, texto=None, icono=None, clases=()):
+        hijo = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10,
+                       halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
+        if icono:
+            hijo.append(Gtk.Image.new_from_icon_name(icono))
+        if texto:
+            hijo.append(Gtk.Label(label=texto))
+        return self._accion(Gtk.Button(child=hijo, css_classes=["tecla", *clases],
+                                       hexpand=True, vexpand=True), al_tocar)
+
+    # ----- Number Key --------------------------------------------------------
+
+    def _pagina_numeros(self):
+        g = Gtk.Grid(column_spacing=18, row_spacing=18, column_homogeneous=True,
+                     row_homogeneous=True, css_classes=["teclado", "numeros"])
+        sep = DECIMAL
+        teclas = [  # (texto, tecla de screenpad-numpad, columna, fila, ancho, alto)
+            ("÷", "KPSLASH", 0, 0, 1, 1), ("×", "KPASTERISK", 1, 0, 1, 1),
+            ("−", "KPMINUS", 2, 0, 1, 1), ("⌫", "BACKSPACE", 3, 0, 1, 1),
+            ("7", "KP7", 0, 1, 1, 1), ("8", "KP8", 1, 1, 1, 1), ("9", "KP9", 2, 1, 1, 1),
+            ("+", "KPPLUS", 3, 1, 1, 2),
+            ("4", "KP4", 0, 2, 1, 1), ("5", "KP5", 1, 2, 1, 1), ("6", "KP6", 2, 2, 1, 1),
+            ("1", "KP1", 0, 3, 1, 1), ("2", "KP2", 1, 3, 1, 1), ("3", "KP3", 2, 3, 1, 1),
+            ("Enter", "KPENTER", 3, 3, 1, 2),
+            ("0", "KP0", 0, 4, 2, 1), (sep, "KPDOT", 2, 4, 1, 1),
+        ]
+        for texto, tecla, x, y, w, h in teclas:
+            clases = ("operador",) if not texto.isdigit() and texto != sep else ()
+            g.attach(self._tecla(lambda t=tecla: self.numpad([t]), texto, clases=clases),
+                     x, y, w, h)
+        return g
+
+    # ----- Quick Key ---------------------------------------------------------
+
+    def _pagina_atajos(self):
+        self.grilla_atajos = Gtk.Grid(column_spacing=18, row_spacing=18,
+                                      column_homogeneous=True, row_homogeneous=True,
+                                      css_classes=["teclado", "atajos"])
+        self._llenar_atajos()
+        return self.grilla_atajos
+
+    def _llenar_atajos(self):
+        self._vaciar(self.grilla_atajos)
+        atajos = self.conf["quick_keys"]
+        if not isinstance(atajos, list) or not atajos:
+            atajos = ATAJOS
+        for n, atajo in enumerate(atajos[:16]):
+            try:
+                texto, icono, combinacion = atajo
+                args = combinacion_wtype(combinacion)
+            except (TypeError, ValueError) as e:
+                log(f"atajo ignorado {atajo!r}: {e}")
+                continue
+            self.grilla_atajos.attach(
+                self._tecla(lambda a=args: self.escribir(a), texto, icono or None),
+                n % 4, n // 4, 1, 1)
+
+    # ----- Calculadora -------------------------------------------------------
+
+    def _pagina_calculadora(self):
+        self.expresion = ""
+        self.resultado = None
+        pantalla = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, css_classes=["visor"],
+                           hexpand=True, valign=Gtk.Align.FILL)
+        self.visor_expr = Gtk.Label(xalign=1, css_classes=["expr"], ellipsize=1,
+                                    vexpand=True, valign=Gtk.Align.END)
+        self.visor_res = Gtk.Label(label="0", xalign=1, css_classes=["res"], ellipsize=1)
+        pantalla.append(self.visor_expr)
+        pantalla.append(self.visor_res)
+        insertar = self._tecla(self._insertar_resultado, "Insertar", "edit-paste-symbolic",
+                               clases=("insertar",))
+        insertar.set_vexpand(False)
+        izq = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18, hexpand=True)
+        izq.append(pantalla)
+        izq.append(insertar)
+
+        g = Gtk.Grid(column_spacing=18, row_spacing=18, column_homogeneous=True,
+                     row_homogeneous=True, hexpand=True)
+        sep = DECIMAL
+        teclas = [  # (texto, entrada, columna, fila, ancho)
+            ("C", "C", 0, 0, 1), ("⌫", "⌫", 1, 0, 1), ("%", "%", 2, 0, 1), ("÷", "/", 3, 0, 1),
+            ("7", "7", 0, 1, 1), ("8", "8", 1, 1, 1), ("9", "9", 2, 1, 1), ("×", "*", 3, 1, 1),
+            ("4", "4", 0, 2, 1), ("5", "5", 1, 2, 1), ("6", "6", 2, 2, 1), ("−", "-", 3, 2, 1),
+            ("1", "1", 0, 3, 1), ("2", "2", 1, 3, 1), ("3", "3", 2, 3, 1), ("+", "+", 3, 3, 1),
+            ("0", "0", 0, 4, 2), (sep, ".", 2, 4, 1), ("=", "=", 3, 4, 1),
+        ]
+        for texto, entrada, x, y, w in teclas:
+            clases = (("igual",) if entrada == "=" else
+                      ("operador",) if not entrada.isdigit() and entrada != "." else ())
+            g.attach(self._tecla(lambda e=entrada: self._calcular(e), texto, clases=clases),
+                     x, y, w, 1)
+
+        caja = Gtk.Box(spacing=36, homogeneous=True, css_classes=["teclado", "calculadora"])
+        caja.append(izq)
+        caja.append(g)
+        return caja
+
+    def _calcular(self, entrada):
+        if entrada == "C":
+            self.expresion, self.resultado = "", None
+        elif entrada == "⌫":
+            self.expresion = self.expresion[:-1]
+        elif entrada == "=":
+            if self.resultado is not None:
+                self.expresion = numero_a_texto(self.resultado, ".")
+        else:
+            if self.expresion == "" and entrada in "+*/%" and self.resultado is not None:
+                self.expresion = numero_a_texto(self.resultado, ".")
+            self.expresion += entrada
+        self.resultado = evaluar(self.expresion)
+        self.visor_expr.set_label(self._legible(self.expresion))
+        self.visor_res.set_label(numero_a_texto(self.resultado, DECIMAL)
+                                 if self.resultado is not None else
+                                 ("0" if not self.expresion else "…"))
+
+    def _legible(self, expr):
+        return (expr.replace("*", " × ").replace("/", " ÷ ").replace("+", " + ")
+                .replace("-", " − ").replace(".", DECIMAL))
+
+    def _insertar_resultado(self):
+        if self.resultado is not None:
+            texto = numero_a_texto(self.resultado, ".")
+            if "e" in texto:            # notación científica: no hay teclas para eso
+                self.escribir(["--", texto.replace(".", DECIMAL)])
+            else:
+                self.numpad([TECLA_NUMPAD[c] for c in texto])
+
+    # ----- Control Center ----------------------------------------------------
+
+    def _centro(self):
+        self.velo_centro = Gtk.Box(css_classes=["velo-centro"], visible=False)
+        self._accion(self.velo_centro, self._cerrar_centro)
+        hoja = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=40,
+                       css_classes=["centro"], halign=Gtk.Align.CENTER,
+                       valign=Gtk.Align.END, hexpand=True, vexpand=True)
+
+        brillo = Gtk.Box(spacing=30)
+        sol = Gtk.Image.new_from_file(os.path.join(ICONOS, "ui", "brightness.svg"))
+        sol.add_css_class("sol")
+        self.escala = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 1, 255, 1)
+        self.escala.set_hexpand(True)
+        self.escala.set_draw_value(False)
+        self.escala.add_css_class("brillo")
+        self.escala.connect("value-changed", self._brillo_cambiado)
+        self._deslizable(self.escala, self._brillo_en)
+        self.pct = Gtk.Label(css_classes=["pct"], width_chars=4, xalign=1)
+        brillo.append(sol)
+        brillo.append(self.escala)
+        brillo.append(self.pct)
+        hoja.append(brillo)
+
+        botones = Gtk.Grid(column_spacing=28, column_homogeneous=True)
+        opciones = [
+            ("number-key", "Number Key", lambda: self._abrir_utilidad("numeros")),
+            ("quick-key", "Quick Key", lambda: self._abrir_utilidad("atajos")),
+            ("touchpad", "Touchpad", lambda: (self._cerrar_centro(), self._entrar_touchpad())),
+            ("lock", "Bloquear", self._bloquear),
+            ("power", "Apagar pad", lambda: (self._cerrar_centro(), self._pedir_modo("off"))),
+            (None, "Ajustes", lambda: (self._cerrar_centro(), self._abrir_config())),
+        ]
+        for n, (icono, texto, accion) in enumerate(opciones):
+            img = (icono_ui(icono) if icono
+                   else Gtk.Image.new_from_icon_name("preferences-system-symbolic"))
+            k = Gtk.Box(css_classes=["k"], halign=Gtk.Align.CENTER)
+            k.append(img)
+            caja = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+            caja.append(k)
+            caja.append(Gtk.Label(label=texto))
+            if icono == "power":
+                k.add_css_class("peligro")
+            botones.attach(self._accion(Gtk.Button(child=caja, css_classes=["opcion"]), accion),
+                           n, 0, 1, 1)
+        hoja.append(botones)
+        self._accion(hoja, lambda: None)       # tocar la hoja no la cierra
+        self.velo_centro.append(hoja)
+        return self.velo_centro
+
+    def _alternar_centro(self):
+        if self.velo_centro.get_visible():
+            self._cerrar_centro()
+        else:
+            self._cerrar_hoja()
+            self._mostrar_brillo()
+            self.velo_centro.set_visible(True)
+
+    def _cerrar_centro(self):
+        self.velo_centro.set_visible(False)
+
+    def _mostrar_brillo(self):
+        """Lee el brillo de screenpadd (la caché del proxy no se actualiza sola)."""
+        nivel = self.brillo
+        if self.servicio:
+            try:
+                r = self.servicio.get_connection().call_sync(
+                    BUS, RUTA, "org.freedesktop.DBus.Properties", "Get",
+                    GLib.Variant("(ss)", (BUS, "Brightness")), GLib.VariantType("(v)"),
+                    Gio.DBusCallFlags.NONE, 500, None)
+                nivel = r.unpack()[0]
+            except GLib.Error:
+                pass
+        self.brillo = nivel
+        self.leyendo_brillo = True
+        self.escala.set_value(nivel)
+        self.leyendo_brillo = False
+        self.pct.set_label(f"{round(nivel * 100 / 255)}%")
+
+    def _brillo_en(self, fraccion):
+        self.escala.set_value(1 + fraccion * 254)
+
+    def _brillo_cambiado(self, escala):
+        nivel = round(escala.get_value())
+        self.pct.set_label(f"{round(nivel * 100 / 255)}%")
+        if self.leyendo_brillo or nivel == self.brillo:
+            return
+        self.brillo = nivel
+        if self.servicio:
+            self.servicio.call("SetBrightness", GLib.Variant("(u)", (nivel,)),
+                               Gio.DBusCallFlags.NONE, 1000, None, None)
+
+    def _bloquear(self):
+        self._cerrar_centro()
+        try:
+            Gio.Subprocess.new(["loginctl", "lock-session"], Gio.SubprocessFlags.NONE)
+        except GLib.Error as e:
+            log(f"no se pudo bloquear: {e.message}")
+
+    def _pedir_modo(self, modo):
+        if self.servicio:
+            self.servicio.call("SetMode", GLib.Variant("(s)", (modo,)),
+                               Gio.DBusCallFlags.NONE, 1000, None, None)
+
+    def _abrir_utilidad(self, pagina):
+        self._cerrar_centro()
+        self._cerrar_hoja()
+        self._ir(pagina)
+
+    # controles que se arrastran (barra de brillo)
+
+    def _deslizable(self, widget, al_cambiar):
+        self._accion(widget, lambda: None)
+        self.deslizables[widget.get_name()] = (widget, al_cambiar)
+
+    def empezar_deslizable(self, objetivo, pos):
+        """Llamado por Pad al apoyar sobre un control deslizable: lo sigue hasta soltar."""
+        par = self.deslizables.get(objetivo.get_name())
+        if not par:
+            return False
+        widget, al_cambiar = par
+
+        def mover(p):
+            ok, caja = widget.compute_bounds(self.ventana)
+            if ok and caja.get_width() > 0:
+                al_cambiar(max(0.0, min(1.0, (p[0] - caja.get_x()) / caja.get_width())))
+        mover(pos)
+        self.pad.arrastrar(mover, lambda _p: None)
+        return True
 
     # ----- barra -------------------------------------------------------------
 
@@ -898,10 +1361,8 @@ class Launcher(Gtk.Application):
         self.zona = Gtk.Box(css_classes=["zona-quitar"], spacing=24,
                             halign=Gtk.Align.FILL, name="zona-quitar")
         contenido = Gtk.Box(spacing=24, halign=Gtk.Align.CENTER, hexpand=True)
-        self.zona_icono = Gtk.Image.new_from_icon_name("user-trash-symbolic")
-        self.zona_texto = Gtk.Label(label="Quitar del inicio")
-        contenido.append(self.zona_icono)
-        contenido.append(self.zona_texto)
+        contenido.append(Gtk.Image.new_from_icon_name("user-trash-symbolic"))
+        contenido.append(Gtk.Label(label="Quitar del inicio"))
         self.zona.append(contenido)
         self.pie.add_named(self.zona, "quitar")
         return self.pie
@@ -910,11 +1371,17 @@ class Launcher(Gtk.Application):
         barra = Gtk.CenterBox(css_classes=["barra"])
         barra.set_start_widget(self._accion(Gtk.Button(child=icono_ui("touchpad")),
                                             self._entrar_touchpad))
-        barra.set_center_widget(self._accion(Gtk.Button(child=icono_ui("home")),
-                                             self._ir_inicio))
-        # el Control Center llega en la fase 3; mientras tanto abre la configuración
+        # alterna: en el inicio lleva a todas las apps y en las demás páginas vuelve al inicio
+        self.icono_centro = Gtk.Stack()
+        self.icono_centro.add_named(icono_ui("apps"), "ir-apps")
+        self.icono_centro.add_named(icono_ui("home"), "ir-inicio")
+        self.paginas.connect("notify::visible-child-name", lambda p, _: (
+            self.icono_centro.set_visible_child_name(
+                "ir-apps" if p.get_visible_child_name() == "inicio" else "ir-inicio")))
+        barra.set_center_widget(self._accion(Gtk.Button(child=self.icono_centro),
+                                             self._boton_centro))
         barra.set_end_widget(self._accion(Gtk.Button(child=icono_ui("control-center")),
-                                          self._abrir_config))
+                                          self._alternar_centro))
         return barra
 
     # ----- touchpad temporal -------------------------------------------------
@@ -922,6 +1389,7 @@ class Launcher(Gtk.Application):
     def _touchpad(self):
         capas = Gtk.Overlay()
         capas.set_child(self._crear_fondo(difuminado=True))
+        capas.add_overlay(Gtk.Box(css_classes=["atenuar"], can_target=False))
         self.estela_w = Estela()
         capas.add_overlay(self.estela_w)
         pista = Gtk.Label(label="Toca con cuatro dedos para volver",
@@ -948,9 +1416,14 @@ class Launcher(Gtk.Application):
         except (TypeError, ValueError):
             blur = 12
         fondo = color(c["background_color"]).to_string()
+        try:
+            atenuar = max(0, min(80, int(c["background_dim"]))) / 100
+        except (TypeError, ValueError):
+            atenuar = 0
         # la imagen difuminada se agranda un poco para que el blur no deje bordes claros
         css = (f".fondo-color, .fondo-imagen {{ background: {fondo}; }}\n"
-               f".difuminado {{ filter: blur({blur}px); transform: scale(1.06); }}\n")
+               f".difuminado {{ filter: blur({blur}px); transform: scale(1.06); }}\n"
+               f".atenuar {{ background: alpha(black, {atenuar}); }}\n")
         self.css_fondo.load_from_data(css.encode())
         ruta = os.path.expanduser(str(c["background"]))
         modo = c["background_mode"]
@@ -1092,8 +1565,17 @@ class Launcher(Gtk.Application):
         if self.paginas.get_visible_child_name() != pagina:
             self.paginas.set_visible_child_name(pagina)
 
+    def _boton_centro(self):
+        self._cerrar_centro()
+        if self.paginas.get_visible_child_name() != "inicio":
+            self._ir_inicio()
+        else:
+            self._cerrar_hoja()
+            self._ir("apps")
+
     def _ir_inicio(self):
         self._cerrar_hoja()
+        self._cerrar_centro()
         self.paginas.set_visible_child_name("inicio")
         if self.n_paginas:
             self._ver_pagina(0, animar=self.pagina != 0)
@@ -1113,6 +1595,7 @@ class Launcher(Gtk.Application):
             self.conf = leer_config()
             if self.ventana:
                 self._aplicar_fondo()
+                self._llenar_atajos()
 
     # ----- screenpadd --------------------------------------------------------
 

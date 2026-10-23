@@ -241,7 +241,9 @@ class Servicio:
         self.brillo = nivel
         self._guardar()
         self.fallo = None
-        self.reconciliar_pronto()
+        # Sin pausa: mientras una orden corre, "ocupado" junta los cambios y al
+        # terminar se aplica solo el último.
+        self.reconciliar()
 
     def _guardar(self):
         os.makedirs(os.path.dirname(ESTADO), exist_ok=True)
