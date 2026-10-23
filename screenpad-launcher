@@ -2,21 +2,6 @@
 # screenpad-launcher - pantalla de inicio del ScreenPad
 # kan0p - https://github.com/kan0p/asus-screenpad-linux - GPL-3.0-or-later
 #
-# Ventana layer-shell en la salida del ScreenPad, activa en el modo "launcher" de
-# screenpadd. El toque del panel no llega como pantalla táctil (ese nodo nunca emite),
-# así que el launcher lee el pad con evdev, lo toma en exclusiva y ubica cada toque con
-# pick() de GTK: no depende del compositor.
-#
-# Dentro del launcher hay un touchpad temporal: fondo difuminado con la estela de los
-# dedos y el pad libre para mover el cursor. Cuatro dedos entran y salen de él; también
-# se vuelve solo tras unos segundos sin tocar.
-#
-# cosmic-comp 1.10 desconecta al cliente que oculta o destruye una superficie layer-shell,
-# así que la ventana nunca se oculta: fuera del modo launcher queda de 1x1, transparente y
-# en la capa del fondo. Cuando la salida del pad desaparece (modo off, replug) el
-# compositor destruye la superficie igual y el proceso termina; systemd lo reinicia y la
-# ventana no se crea hasta que la salida vuelve.
-#
 # uso: screenpad-launcher [--debug]
 
 import os, sys
@@ -29,7 +14,7 @@ if LIB_LAYER not in os.environ.get("LD_PRELOAD", ""):
     os.execv(sys.executable, [sys.executable, *sys.argv])
 
 import ast, calendar, datetime, json, locale, math, operator, re, shutil, signal, socket
-import subprocess, time, tomllib
+import struct, subprocess, time, tomllib
 
 import evdev
 from evdev import ecodes
@@ -73,6 +58,8 @@ XDG_CONFIG = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"
 XDG_STATE = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
 CONFIG = os.path.join(XDG_CONFIG, "screenpad", "config.toml")
 INICIO = os.path.join(XDG_STATE, "screenpad", "inicio.json")
+# identificadores de las ventanas que estaban en el pad antes de salir del modo monitor
+VENTANAS_PAD = os.path.join(XDG_STATE, "screenpad", "ventanas-pad.json")
 CONECTOR = "/var/lib/screenpad/conector"     # lo deja "screenpad on"
 
 AQUI = os.path.dirname(os.path.realpath(__file__))
@@ -84,7 +71,8 @@ ICONOS = next((d for d in (os.environ.get("SCREENPAD_ICONS"),
 
 # apps del inicio si el usuario todavía no eligió: las primeras que estén instaladas
 INICIO_PREDETERMINADO = [
-    "screenpad:numeros", "screenpad:atajos", "screenpad:calculadora", "screenpad:calendario",
+    "screenpad:ventanas", "screenpad:numeros", "screenpad:atajos", "screenpad:calculadora",
+    "screenpad:calendario",
     "firefox.desktop", "chromium.desktop", "com.system76.CosmicFiles.desktop",
     "org.gnome.Nautilus.desktop", "com.system76.CosmicTerm.desktop",
     "com.system76.CosmicEdit.desktop", "com.system76.CosmicSettings.desktop",
@@ -124,6 +112,7 @@ UTILIDADES = {
     "screenpad:atajos": ("quick-key", "Quick Key", "atajos"),
     "screenpad:calculadora": ("calculator", "Calculadora", "calculadora"),
     "screenpad:calendario": ("calendar", "Calendario", "calendario"),
+    "screenpad:ventanas": ("app-navigator", "Ventanas", "ventanas"),
 }
 
 # categorías de "Todas las apps": (clave, nombre, categorías freedesktop)
@@ -296,6 +285,19 @@ scale.brillo slider { min-width: 54px; min-height: 54px; margin: -17px; border-r
 .dia.finde { opacity: 0.8; }
 .dia.fuera { opacity: 0.3; }
 .dia.hoy { background: #4d9bff; font-weight: 600; opacity: 1; }
+.lista-ventanas { margin: 0 77px 40px 77px; }
+.seccion { font-size: 28px; font-weight: 600; opacity: 0.8; margin: 8px 8px 0 8px;
+           text-shadow: 0 1px 3px alpha(black, 0.7); }
+.ventana { background: alpha(black, 0.42); border: 1px solid alpha(white, 0.14);
+           border-radius: 34px; padding: 26px 28px; }
+.ventana.activa { background: alpha(#1d3a6b, 0.6); border: 2px solid #4d9bff; }
+.ventana.minimizada { opacity: 0.6; }
+.ventana.presionado { background: alpha(white, 0.18); }
+.icono-ventana { -gtk-icon-size: 96px; }
+.v-titulo { font-size: 30px; font-weight: 600; }
+.v-app { font-size: 22px; opacity: 0.7; }
+.control.peligro { background: alpha(#e5484d, 0.35); }
+.vacio { font-size: 32px; opacity: 0.7; margin-top: 120px; }
 """
 
 
@@ -415,6 +417,23 @@ def metadato_entero(p, clave):
 def minutos(us):
     s = int(us // 1_000_000)
     return f"{s // 3600}:{s // 60 % 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
+
+
+def leer_ventanas_pad():
+    try:
+        with open(VENTANAS_PAD) as f:
+            ids = json.load(f)
+        return {i for i in ids if isinstance(i, str)} if isinstance(ids, list) else set()
+    except (FileNotFoundError, ValueError, OSError):
+        return set()
+
+
+def guardar_ventanas_pad(ids):
+    os.makedirs(os.path.dirname(VENTANAS_PAD), exist_ok=True)
+    tmp = VENTANAS_PAD + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(sorted(ids), f)
+    os.replace(tmp, VENTANAS_PAD)
 
 
 def guardar_inicio(ids):
@@ -726,6 +745,319 @@ class Estela(Gtk.Widget):
                 snap.append_stroke(b.to_path(), trazo, c)
 
 
+class Wayland:
+    """Cliente Wayland propio (formato binario del protocolo) para listar y manejar
+    ventanas en COSMIC; solo los mensajes que usa el launcher."""
+
+    # firmas de los eventos: i int, u uint, s texto, o objeto, n objeto nuevo, a arreglo
+    EVENTOS = {
+        "wl_display": [("error", "ous"), ("delete_id", "u")],
+        "wl_registry": [("global", "usu"), ("global_remove", "u")],
+        "wl_callback": [("done", "u")],
+        "wl_seat": [("capabilities", "u"), ("name", "s")],
+        "wl_output": [("geometry", "iiiiissi"), ("mode", "uiii"), ("done", ""), ("scale", "i"),
+                      ("name", "s"), ("description", "s")],
+        "ext_foreign_toplevel_list_v1": [("toplevel", "n"), ("finished", "")],
+        "ext_foreign_toplevel_handle_v1": [("closed", ""), ("done", ""), ("title", "s"),
+                                           ("app_id", "s"), ("identifier", "s")],
+        "zcosmic_toplevel_info_v1": [("toplevel", "n"), ("finished", ""), ("done", "")],
+        "zcosmic_toplevel_handle_v1": [
+            ("closed", ""), ("done", ""), ("title", "s"), ("app_id", "s"),
+            ("output_enter", "o"), ("output_leave", "o"), ("workspace_enter", "o"),
+            ("workspace_leave", "o"), ("state", "a"), ("geometry", "oiiii"),
+            ("ext_workspace_enter", "o"), ("ext_workspace_leave", "o")],
+        "zcosmic_toplevel_manager_v1": [("capabilities", "a")],
+        "ext_workspace_manager_v1": [("workspace_group", "n"), ("workspace", "n"), ("done", ""),
+                                     ("finished", "")],
+        "ext_workspace_group_handle_v1": [("capabilities", "u"), ("output_enter", "o"),
+                                          ("output_leave", "o"), ("workspace_enter", "o"),
+                                          ("workspace_leave", "o"), ("removed", "")],
+        "ext_workspace_handle_v1": [("id", "s"), ("name", "s"), ("coordinates", "a"),
+                                    ("state", "u"), ("capabilities", "u"), ("removed", "")],
+    }
+    # interfaz de los objetos que crea el compositor en un evento "n"
+    NUEVOS = {("ext_foreign_toplevel_list_v1", "toplevel"): "ext_foreign_toplevel_handle_v1",
+              ("zcosmic_toplevel_info_v1", "toplevel"): "zcosmic_toplevel_handle_v1",
+              ("ext_workspace_manager_v1", "workspace_group"): "ext_workspace_group_handle_v1",
+              ("ext_workspace_manager_v1", "workspace"): "ext_workspace_handle_v1"}
+    # globales que se enlazan, con la versión máxima que entiende este cliente
+    GLOBALES = {"wl_seat": 1, "wl_output": 4, "ext_foreign_toplevel_list_v1": 1,
+                "zcosmic_toplevel_info_v1": 3, "zcosmic_toplevel_manager_v1": 4,
+                "ext_workspace_manager_v1": 1}
+    ESTADOS = {0: "maximizada", 1: "minimizada", 2: "activa", 3: "pantalla completa"}
+
+    def __init__(self, al_cambiar):
+        self.al_cambiar = al_cambiar
+        self.objetos = {1: "wl_display"}
+        self.siguiente = 2
+        self.globales = {}          # interfaz -> id de nuestro objeto
+        self.salidas = {}           # id wl_output -> nombre del conector
+        self.ventanas = {}          # id cosmic -> datos
+        self.de_foreign = {}        # id ext_foreign -> id cosmic
+        self.grupos = {}            # id grupo -> {"salidas": set, "espacios": set}
+        self.espacios = {}          # id espacio -> estado
+        self.buf = b""
+        self.aviso = 0
+        self.sock = None
+        ruta = os.environ.get("WAYLAND_DISPLAY", "wayland-0")
+        if not ruta.startswith("/"):
+            ruta = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), ruta)
+        try:
+            self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.sock.connect(ruta)
+        except OSError as e:
+            log(f"sin conexión Wayland para las ventanas: {e}")
+            self.sock = None
+            return
+        self.sock.setblocking(False)
+        self.fuente = GLib.io_add_watch(self.sock.fileno(), GLib.PRIORITY_DEFAULT,
+                                        GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, self._leer)
+        self.registro = self._nuevo("wl_registry")
+        self._enviar(1, 1, self._u(self.registro))         # wl_display.get_registry
+
+    # ----- formato del protocolo
+
+    @staticmethod
+    def _u(v):
+        return struct.pack("=I", v & 0xFFFFFFFF)
+
+    @staticmethod
+    def _texto(t):
+        b = t.encode() + b"\0"
+        return Wayland._u(len(b)) + b + b"\0" * (-len(b) % 4)
+
+    def _nuevo(self, interfaz):
+        i = self.siguiente
+        self.siguiente += 1
+        self.objetos[i] = interfaz
+        return i
+
+    def _enviar(self, objeto, opcode, *partes):
+        if not self.sock:
+            return
+        datos = b"".join(partes)
+        try:
+            self.sock.sendall(self._u(objeto) + self._u(((8 + len(datos)) << 16) | opcode) + datos)
+        except OSError as e:
+            log(f"Wayland (ventanas): {e}")
+
+    def _leer(self, _fd, condicion):
+        try:
+            datos = self.sock.recv(65536)
+        except BlockingIOError:
+            return True
+        except OSError:
+            datos = b""
+        if not datos:
+            log("se cerró la conexión Wayland de las ventanas")
+            self.sock = None
+            return False
+        self.buf += datos
+        while len(self.buf) >= 8:
+            objeto, op = struct.unpack_from("=II", self.buf)
+            largo, opcode = op >> 16, op & 0xFFFF
+            if len(self.buf) < largo:
+                break
+            cuerpo, self.buf = self.buf[8:largo], self.buf[largo:]
+            self._evento(objeto, opcode, cuerpo)
+        return True
+
+    def _evento(self, objeto, opcode, cuerpo):
+        interfaz = self.objetos.get(objeto)
+        tabla = self.EVENTOS.get(interfaz)
+        if not tabla or opcode >= len(tabla):
+            return
+        nombre, firma = tabla[opcode]
+        args, pos = [], 0
+        for t in firma:
+            if t in "uon":
+                args.append(struct.unpack_from("=I", cuerpo, pos)[0])
+                pos += 4
+            elif t == "i":
+                args.append(struct.unpack_from("=i", cuerpo, pos)[0])
+                pos += 4
+            elif t in "sa":
+                n = struct.unpack_from("=I", cuerpo, pos)[0]
+                crudo = cuerpo[pos + 4:pos + 4 + n]
+                args.append(crudo[:-1].decode(errors="replace") if t == "s" and n else
+                            ("" if t == "s" else crudo))
+                pos += 4 + n + (-n % 4)
+            if t == "n":
+                self.objetos[args[-1]] = self.NUEVOS[(interfaz, nombre)]
+        manejador = getattr(self, f"_{interfaz}_{nombre}", None)
+        if manejador:
+            manejador(objeto, *args)
+
+    # ----- eventos
+
+    def _wl_display_error(self, _o, objeto, codigo, mensaje):
+        log(f"error Wayland en {self.objetos.get(objeto)}#{objeto} ({codigo}): {mensaje}")
+
+    def _wl_registry_global(self, _o, nombre, interfaz, version):
+        if interfaz not in self.GLOBALES:
+            return
+        if interfaz != "wl_output" and interfaz in self.globales:
+            return
+        v = min(version, self.GLOBALES[interfaz])
+        i = self._nuevo(interfaz)
+        self._enviar(self.registro, 0, self._u(nombre), self._texto(interfaz), self._u(v),
+                     self._u(i))
+        if interfaz == "wl_output":
+            self.salidas[i] = ""
+        else:
+            self.globales[interfaz] = i
+
+    def _wl_output_name(self, o, nombre):
+        self.salidas[o] = nombre
+
+    def _ext_foreign_toplevel_list_v1_toplevel(self, _o, foreign):
+        info = self.globales.get("zcosmic_toplevel_info_v1")
+        if not info:
+            return
+        c = self._nuevo("zcosmic_toplevel_handle_v1")
+        self._enviar(info, 1, self._u(c), self._u(foreign))   # get_cosmic_toplevel
+        self.de_foreign[foreign] = c
+        self.ventanas[c] = {"titulo": "", "app_id": "", "estados": set(), "salidas": set(),
+                            "foreign": foreign, "lista": False, "id": ""}
+
+    def _ext_foreign_toplevel_handle_v1_closed(self, f, *_):
+        self._enviar(f, 0)                                      # destroy
+        self.objetos.pop(f, None)
+        c = self.de_foreign.pop(f, None)
+        if c in self.ventanas:
+            del self.ventanas[c]
+            self._enviar(c, 0)
+            self.objetos.pop(c, None)
+            self._avisar()
+
+    # Con zcosmic_toplevel_info v2+, título, app y "done" llegan por el handle de
+    # ext_foreign_toplevel; el de COSMIC solo trae estado, salida y espacio de trabajo.
+
+    def _ext_foreign_toplevel_handle_v1_title(self, f, t):
+        c = self.de_foreign.get(f)
+        if c in self.ventanas:
+            self.ventanas[c]["titulo"] = t
+
+    def _ext_foreign_toplevel_handle_v1_app_id(self, f, a):
+        c = self.de_foreign.get(f)
+        if c in self.ventanas:
+            self.ventanas[c]["app_id"] = a
+
+    def _ext_foreign_toplevel_handle_v1_identifier(self, f, ident):
+        c = self.de_foreign.get(f)
+        if c in self.ventanas:
+            self.ventanas[c]["id"] = ident
+
+    def _ext_foreign_toplevel_handle_v1_done(self, f):
+        c = self.de_foreign.get(f)
+        if c in self.ventanas:
+            self.ventanas[c]["lista"] = True
+            self._avisar()
+
+    def _zcosmic_toplevel_handle_v1_output_enter(self, c, s):
+        if c in self.ventanas:
+            self.ventanas[c]["salidas"].add(s)
+            self._avisar()
+
+    def _zcosmic_toplevel_handle_v1_output_leave(self, c, s):
+        if c in self.ventanas:
+            self.ventanas[c]["salidas"].discard(s)
+            self._avisar()
+
+    def _zcosmic_toplevel_handle_v1_state(self, c, arreglo):
+        if c in self.ventanas:
+            valores = struct.unpack(f"={len(arreglo) // 4}I", arreglo)
+            self.ventanas[c]["estados"] = {self.ESTADOS.get(v, str(v)) for v in valores}
+            self._avisar()
+
+    def _ext_workspace_manager_v1_workspace_group(self, _o, g):
+        self.grupos[g] = {"salidas": set(), "espacios": set()}
+
+    def _ext_workspace_manager_v1_workspace(self, _o, w):
+        self.espacios[w] = 0
+
+    def _ext_workspace_group_handle_v1_output_enter(self, g, s):
+        self.grupos.setdefault(g, {"salidas": set(), "espacios": set()})["salidas"].add(s)
+
+    def _ext_workspace_group_handle_v1_output_leave(self, g, s):
+        if g in self.grupos:
+            self.grupos[g]["salidas"].discard(s)
+
+    def _ext_workspace_group_handle_v1_workspace_enter(self, g, w):
+        self.grupos.setdefault(g, {"salidas": set(), "espacios": set()})["espacios"].add(w)
+
+    def _ext_workspace_group_handle_v1_workspace_leave(self, g, w):
+        if g in self.grupos:
+            self.grupos[g]["espacios"].discard(w)
+
+    def _ext_workspace_group_handle_v1_removed(self, g):
+        self.grupos.pop(g, None)
+
+    def _ext_workspace_handle_v1_state(self, w, estado):
+        self.espacios[w] = estado
+
+    def _ext_workspace_handle_v1_removed(self, w):
+        self.espacios.pop(w, None)
+
+    def _avisar(self):
+        # muchos "done" llegan juntos: se agrupan en un solo aviso
+        if not self.aviso:
+            self.aviso = GLib.timeout_add(80, self._fin_aviso)
+
+    def _fin_aviso(self):
+        self.aviso = 0
+        self.al_cambiar()
+        return False
+
+    # ----- consultas y órdenes
+
+    def disponible(self):
+        return bool(self.sock and "zcosmic_toplevel_manager_v1" in self.globales)
+
+    def lista(self):
+        return [(c, v) for c, v in self.ventanas.items() if v["lista"]]
+
+    def salida(self, c):
+        """Nombre del conector donde está la ventana (la primera, si toca varias)."""
+        for s in self.ventanas.get(c, {}).get("salidas", ()):
+            return self.salidas.get(s, "")
+        return ""
+
+    def _gestor(self, opcode, c, *extra):
+        g = self.globales.get("zcosmic_toplevel_manager_v1")
+        if g and c in self.ventanas:
+            self._enviar(g, opcode, self._u(c), *extra)
+
+    def activar(self, c):
+        if "minimizada" in self.ventanas.get(c, {}).get("estados", ()):
+            self._gestor(6, c)                                  # unset_minimized
+        seat = self.globales.get("wl_seat")
+        if seat:
+            self._gestor(2, c, self._u(seat))                   # activate
+
+    def minimizar(self, c, si):
+        self._gestor(5 if si else 6, c)
+
+    def cerrar(self, c):
+        self._gestor(1, c)
+
+    def sin_pantalla_completa(self, c):
+        self._gestor(8, c)                                      # unset_fullscreen
+
+    def mover(self, c, conector):
+        """A la salida 'conector', en el espacio de trabajo activo de esa salida."""
+        salida = next((s for s, n in self.salidas.items() if n == conector), None)
+        if salida is None:
+            return False
+        grupo = next((g for g in self.grupos.values() if salida in g["salidas"]), None)
+        if not grupo or not grupo["espacios"]:
+            return False
+        espacio = next((w for w in grupo["espacios"] if self.espacios.get(w, 0) & 1),
+                       next(iter(grupo["espacios"])))
+        self._gestor(13, c, self._u(espacio), self._u(salida))  # move_to_ext_workspace
+        return True
+
+
 class Ecualizador(Gtk.Widget):
     """Cuatro barras que se mueven mientras suena algo y quedan quietas en pausa."""
 
@@ -742,7 +1074,7 @@ class Ecualizador(Gtk.Widget):
     def activar(self, si):
         self.activo = si
         if si and not self.tic:
-            # 20 cuadros por segundo: cada cuadro recompone la ventana con el fondo
+            # 20 cuadros por segundo
             self.tic = GLib.timeout_add(50, self._tic)
         self.queue_draw()
 
@@ -836,6 +1168,10 @@ class Launcher(Gtk.Application):
         self.categorias_de = {}     # nombre del mosaico -> claves de CATEGORIAS
         self.fichas_categoria = []
         self.ficha_clave = {}
+        self.wl = None
+        self.del_pad = leer_ventanas_pad()
+        self.reintento_pad = 0
+        self.apps_por_id = {}       # app_id de una ventana -> DesktopAppInfo o None
         self.orden = None           # ids del inicio mientras se arrastra
         self.arrastrada = None
         self.espera_borde = 0
@@ -861,6 +1197,7 @@ class Launcher(Gtk.Application):
         self._vigilar_config()
         self._conectar_servicio()
         self._iniciar_musica()
+        self.wl = Wayland(self._ventanas_cambio)
         pantalla.get_monitors().connect("items-changed", lambda *_: self._revisar_salida())
         self._revisar_salida()
 
@@ -891,8 +1228,7 @@ class Launcher(Gtk.Application):
         debug(f"salida: {salida.get_connector()}")
         v.set_cursor(Gdk.Cursor.new_from_name("none", None))
 
-        # no homogéneo: cada página reserva solo su alto; si no, la más alta empuja la
-        # barra fuera del pad en todas
+        # no homogéneo: cada página reserva solo su alto
         self.paginas = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE,
                                  vexpand=True, hhomogeneous=False, vhomogeneous=False)
         self.paginas.add_named(self._pagina_inicio(), "inicio")
@@ -901,6 +1237,7 @@ class Launcher(Gtk.Application):
         self.paginas.add_named(self._pagina_atajos(), "atajos")
         self.paginas.add_named(self._pagina_calculadora(), "calculadora")
         self.paginas.add_named(self._pagina_calendario(), "calendario")
+        self.paginas.add_named(self._pagina_ventanas(), "ventanas")
         caja = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.estado_w = self._estado()
         self.paginas.connect("notify::visible-child-name", lambda p, _: self.estado_w.set_visible(
@@ -1456,6 +1793,7 @@ class Launcher(Gtk.Application):
 
         botones = Gtk.Grid(column_spacing=28, column_homogeneous=True)
         opciones = [
+            ("app-navigator", "Ventanas", lambda: self._abrir_utilidad("ventanas")),
             ("number-key", "Number Key", lambda: self._abrir_utilidad("numeros")),
             ("quick-key", "Quick Key", lambda: self._abrir_utilidad("atajos")),
             ("touchpad", "Touchpad", lambda: (self._cerrar_centro(), self._entrar_touchpad())),
@@ -1618,7 +1956,7 @@ class Launcher(Gtk.Application):
                 self.pausado_desde.pop(inst, None)
                 visibles.append(p)
             elif self._detenido(p):
-                # Brave deja el reproductor publicado y detenido al salir del video
+                # detenido: no hay nada que controlar
                 self.pausado_desde.pop(inst, None)
             else:
                 desde = self.pausado_desde.setdefault(inst, ahora)
@@ -1783,7 +2121,8 @@ class Launcher(Gtk.Application):
             self.m_repetir.set_icon_name("media-playlist-repeat-song-symbolic"
                                          if bucle == Playerctl.LoopStatus.TRACK
                                          else "media-playlist-repeat-symbolic")
-        self.m_ir.set_visible(self._admite(p, "CanRaise", "org.mpris.MediaPlayer2", True))
+        self.m_ir.set_visible(self._admite(p, "CanRaise", "org.mpris.MediaPlayer2", True)
+                              or self._ventana_de_reproductor(p) is not None)
         self._tic_progreso()
 
     def _marcar(self, boton, activo):
@@ -1837,7 +2176,11 @@ class Launcher(Gtk.Application):
 
     def _ir_a_app(self):
         p = self._actual()
-        if p:
+        c = self._ventana_de_reproductor(p) if p else None
+        if c is not None:
+            self.wl.activar(c)
+            self._cerrar_musica()
+        elif p:
             self.bus.call("org.mpris.MediaPlayer2." + p.props.player_instance,
                           "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2", "Raise", None,
                           None, Gio.DBusCallFlags.NONE, 1000, None, None)
@@ -2004,6 +2347,187 @@ class Launcher(Gtk.Application):
             return True
         return self.categoria in self.categorias_de.get(hijo.get_child().get_name(), ())
 
+    # ----- ventanas ----------------------------------------------------------
+
+    def _pagina_ventanas(self):
+        self.lista_ventanas = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24,
+                                      css_classes=["lista-ventanas"])
+        desplazable = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
+                                         vexpand=True, child=self.lista_ventanas)
+        caja = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        caja.append(Gtk.Label(label="Ventanas", xalign=0, css_classes=["titulo"]))
+        caja.append(desplazable)
+        self.paginas.connect("notify::visible-child-name", lambda p, _: (
+            self._llenar_ventanas() if p.get_visible_child_name() == "ventanas" else None))
+        return caja
+
+    def _ventanas_cambio(self):
+        if self.ventana and self.paginas.get_visible_child_name() == "ventanas":
+            self._llenar_ventanas()
+
+    def _conector_pad(self):
+        salida = buscar_salida(self.conf)
+        return salida.get_connector() if salida else ""
+
+    def _llenar_ventanas(self):
+        self._vaciar(self.lista_ventanas)
+        if not self.wl.disponible():
+            self.lista_ventanas.append(Gtk.Label(
+                label="Este escritorio no permite manejar ventanas", css_classes=["vacio"]))
+            return
+        lista = self.wl.lista()
+        if not lista:
+            self.lista_ventanas.append(Gtk.Label(label="No hay ventanas abiertas",
+                                                 css_classes=["vacio"]))
+            return
+        pad = self._conector_pad()
+        grupos = [("Pantalla principal", [(c, v) for c, v in lista if self.wl.salida(c) != pad]),
+                  ("ScreenPad", [(c, v) for c, v in lista if pad and self.wl.salida(c) == pad])]
+        for nombre, ventanas in grupos:
+            if not ventanas:
+                continue
+            self.lista_ventanas.append(Gtk.Label(label=f"{nombre} · {len(ventanas)}", xalign=0,
+                                                 css_classes=["seccion"]))
+            grilla = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True,
+                                 min_children_per_line=3, max_children_per_line=3,
+                                 row_spacing=24, column_spacing=24)
+            for c, v in ventanas:
+                grilla.append(self._tarjeta_ventana(c, v, nombre == "ScreenPad"))
+            self.lista_ventanas.append(grilla)
+
+    def _tarjeta_ventana(self, c, v, en_pad):
+        app = self._app_de(v["app_id"])
+        icono = (app.get_icon() if app else None) or Gio.ThemedIcon.new_with_default_fallbacks(
+            v["app_id"] or "application-x-executable")
+        img = Gtk.Image.new_from_gicon(icono)
+        img.add_css_class("icono-ventana")
+        minimizada = "minimizada" in v["estados"]
+        nombre = app.get_display_name() if app else v["app_id"]
+        textos = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6,
+                         valign=Gtk.Align.CENTER, hexpand=True)
+        textos.append(Gtk.Label(label=v["titulo"] or nombre, xalign=0, wrap=True, lines=2,
+                                ellipsize=3, natural_wrap_mode=Gtk.NaturalWrapMode.WORD,
+                                max_width_chars=1, hexpand=True, css_classes=["v-titulo"]))
+        textos.append(Gtk.Label(label=" · ".join(x for x in (
+            nombre, "minimizada" if minimizada else "") if x), xalign=0, ellipsize=3,
+            max_width_chars=1, hexpand=True, css_classes=["v-app"]))
+        arriba = Gtk.Box(spacing=26)
+        arriba.append(img)
+        arriba.append(textos)
+
+        botones = Gtk.Box(spacing=16, halign=Gtk.Align.END)
+        botones.append(self._control(
+            "window-restore-symbolic" if minimizada else "window-minimize-symbolic",
+            lambda: self.wl.minimizar(c, not minimizada), ("chico",)))
+        botones.append(self._control("go-up-symbolic" if en_pad else "go-down-symbolic",
+                                     lambda: self._mover_ventana(c, en_pad), ("chico",)))
+        botones.append(self._control("window-close-symbolic", lambda: self.wl.cerrar(c),
+                                     ("chico", "peligro")))
+        tarjeta = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=22,
+                          css_classes=["ventana"])
+        if "activa" in v["estados"]:
+            tarjeta.add_css_class("activa")
+        if minimizada:
+            tarjeta.add_css_class("minimizada")
+        tarjeta.append(arriba)
+        tarjeta.append(botones)
+        return self._accion(tarjeta, lambda: self.wl.activar(c))
+
+    def _mover_ventana(self, c, desde_pad):
+        pad = self._conector_pad()
+        if desde_pad:
+            destino = next((n for n in self.wl.salidas.values() if n and n != pad), "")
+        else:
+            destino = pad
+        if not destino or not self.wl.mover(c, destino):
+            self._avisar("No se pudo mover la ventana")
+            return
+        if not desde_pad:
+            # en modo launcher el pad está cubierto: pasa a monitor
+            self._avisar("Ventana en el ScreenPad: pasando a modo monitor")
+            GLib.timeout_add(900, lambda: self._pedir_modo("monitor") and False)
+
+    def _sacar_del_pad(self):
+        """Fuera del modo monitor el pad no se ve: sus ventanas pasan a la principal."""
+        pad = self._conector_pad()
+        principal = next((n for n in self.wl.salidas.values() if n and n != pad), "")
+        if not pad or not principal:
+            return
+        movidas = set()
+        for c, v in self.wl.lista():
+            if self.wl.salida(c) != pad:
+                continue
+            if "pantalla completa" in v["estados"]:
+                self.wl.sin_pantalla_completa(c)
+            if self.wl.mover(c, principal) and v["id"]:
+                movidas.add(v["id"])
+        if movidas:
+            debug(f"{len(movidas)} ventanas del pad a {principal}")
+            self.del_pad |= movidas
+            guardar_ventanas_pad(self.del_pad)
+
+    def _devolver_al_pad(self, intentos=10):
+        """Al volver a monitor, las ventanas que estaban en el pad regresan a él."""
+        if self.reintento_pad:
+            GLib.source_remove(self.reintento_pad)
+            self.reintento_pad = 0
+        if not self.del_pad:
+            return
+        pad = self._conector_pad()
+        lista = self.wl.lista()
+        listo = pad in self.wl.salidas.values() and lista and any(
+            pad in (self.wl.salidas.get(o) for o in g["salidas"]) for g in self.wl.grupos.values())
+        if not listo:
+            # la salida del pad o la lista de ventanas todavía no llegaron
+            if intentos > 0 and self.modo == "monitor":
+                self.reintento_pad = GLib.timeout_add(1000, self._reintentar_pad, intentos - 1)
+            return
+        for c, v in lista:
+            if v["id"] in self.del_pad and self.wl.salida(c) != pad:
+                self.wl.mover(c, pad)
+        debug("ventanas devueltas al pad")
+        self.del_pad = set()
+        guardar_ventanas_pad(self.del_pad)
+
+    def _reintentar_pad(self, intentos):
+        self.reintento_pad = 0
+        if self.modo == "monitor":
+            self._devolver_al_pad(intentos)
+        return False
+
+    def _app_de(self, app_id):
+        """La app (.desktop) de una ventana, por id o por StartupWMClass."""
+        if not app_id:
+            return None
+        if app_id in self.apps_por_id:
+            return self.apps_por_id[app_id]
+        app = None
+        for candidato in (app_id, app_id.lower()):
+            try:
+                app = DesktopAppInfo.new(candidato + ".desktop")
+            except TypeError:
+                app = None
+            if app:
+                break
+        if app is None:
+            clave = app_id.lower()
+            for a in Gio.AppInfo.get_all():
+                clase = (a.get_startup_wm_class() or "").lower() if hasattr(
+                    a, "get_startup_wm_class") else ""
+                if clase == clave or (a.get_id() or "").lower().removesuffix(".desktop") == clave:
+                    app = a
+                    break
+        self.apps_por_id[app_id] = app
+        return app
+
+    def _ventana_de_reproductor(self, p):
+        """La ventana de la app que reproduce (brave -> brave-browser), si hay una."""
+        nombre = p.props.player_name.lower()
+        for c, v in self.wl.lista() if self.wl else []:
+            if nombre and nombre in v["app_id"].lower():
+                return c
+        return None
+
     # ----- barra -------------------------------------------------------------
 
     def _pie(self):
@@ -2029,8 +2553,11 @@ class Launcher(Gtk.Application):
         self.paginas.connect("notify::visible-child-name", lambda p, _: (
             self.icono_centro.set_visible_child_name(
                 "ir-apps" if p.get_visible_child_name() == "inicio" else "ir-inicio")))
-        barra.set_center_widget(self._accion(Gtk.Button(child=self.icono_centro),
-                                             self._boton_centro))
+        centro = Gtk.Box(spacing=10)
+        centro.append(self._accion(Gtk.Button(child=self.icono_centro), self._boton_centro))
+        centro.append(self._accion(Gtk.Button(child=icono_ui("app-navigator")),
+                                   self._boton_ventanas))
+        barra.set_center_widget(centro)
         der = Gtk.Box(spacing=10)
         der.append(self._boton_musica())
         der.append(self._accion(Gtk.Button(child=icono_ui("control-center")),
@@ -2227,6 +2754,15 @@ class Launcher(Gtk.Application):
             self._cerrar_hoja()
             self._ir("apps")
 
+    def _boton_ventanas(self):
+        self._cerrar_centro()
+        self._cerrar_musica()
+        self._cerrar_hoja()
+        if self.paginas.get_visible_child_name() == "ventanas":
+            self._ir_inicio()
+        else:
+            self._ir("ventanas")
+
     def _ir_inicio(self):
         self._cerrar_hoja()
         self._cerrar_centro()
@@ -2277,6 +2813,10 @@ class Launcher(Gtk.Application):
         debug(f"modo: {modo}")
         self.modo = modo
         self._cancelar_vuelta()
+        if self.wl and modo in ("launcher", "dark", "off"):
+            self._sacar_del_pad()
+        elif self.wl and modo == "monitor":
+            self._devolver_al_pad()
         if not self.ventana:
             self.pad.cerrar()
             return

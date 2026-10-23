@@ -2,7 +2,7 @@
 Description=Launcher del ScreenPad
 PartOf=graphical-session.target
 After=graphical-session.target screenpadd.service
-# el compositor lo desconecta cada vez que la salida del pad desaparece
+# se reinicia cada vez que la salida del pad desaparece
 StartLimitIntervalSec=0
 
 [Service]

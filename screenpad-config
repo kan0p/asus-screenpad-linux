@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 # screenpad-config - configuración del ScreenPad en la pantalla principal
 # kan0p - https://github.com/kan0p/asus-screenpad-linux - GPL-3.0-or-later
-#
-# Edita ~/.config/screenpad/config.toml. El launcher vigila el archivo y aplica los
-# cambios al instante. Las claves que no maneja esta ventana se conservan.
 
 import os, sys, tomllib
 

@@ -91,7 +91,7 @@ El brillo se maneja por WMI y no por `/sys/class/backlight`. En 0 apaga solo la 
 
 ## Launcher
 
-`screenpad-launcher` es la pantalla del modo `launcher`: hora y fecha, una cuadrícula de 4×2 con páginas y una barra con touchpad, todas las apps (o inicio, fuera del inicio), música y Control Center. El nodo táctil del panel nunca emite, así que el launcher lee el pad con evdev, lo toma en exclusiva y traduce cada toque a la posición en pantalla. No depende del compositor.
+`screenpad-launcher` es la pantalla del modo `launcher`: hora y fecha, una cuadrícula de 4×2 con páginas y una barra con touchpad, todas las apps (o inicio, fuera del inicio), ventanas, música y Control Center. El nodo táctil del panel nunca emite, así que el launcher lee el pad con evdev, lo toma en exclusiva y traduce cada toque a la posición en pantalla. No depende del compositor.
 
 - **Tocar** abre la app.
 - **Mantener presionado** levanta el mosaico: se arrastra para reordenar, al borde para cambiar de página, y sobre la barra roja para quitarlo del inicio.
@@ -107,8 +107,11 @@ El **Control Center** sube desde la barra: brillo del pad (se arrastra con el de
 - **Quick Key**: hasta 16 atajos (copiar, pegar, deshacer, captura…) que se mandan a la app activa con `wtype`.
 - **Calculadora**: `%` es porcentaje; **Insertar** escribe el resultado en la app activa.
 - **Calendario**: el mes con el día de hoy; se desliza de lado para cambiar de mes.
+- **Ventanas**: las ventanas abiertas, agrupadas por pantalla. Tocar una la trae al frente; cada una se puede minimizar, cerrar o mover entre la pantalla principal y el pad.
 
-Las cuatro son mosaicos que se pueden poner en el inicio.
+Las cinco son mosaicos que se pueden poner en el inicio.
+
+Las ventanas que están en el pad pasan solas a la pantalla principal al salir del modo `monitor` (launcher, dark u off) y regresan al volver. Ventanas usa los protocolos de COSMIC (`ext_foreign_toplevel_list_v1`, `zcosmic_toplevel_info_v1`, `zcosmic_toplevel_manager_v1` y `ext_workspace_manager_v1`) con un cliente Wayland propio, sin dependencias.
 
 ### Música
 

@@ -1,5 +1,3 @@
-# Fn+F6 (código ATK 0x6B) llega como KEY_TOUCHPAD_TOGGLE, y COSMIC/GNOME lo usan
-# para apagar el touchpad por su cuenta además de screenpadd. Se cambia por
-# KEY_MACRO1, que xkb no conoce: el escritorio lo ignora y screenpadd lo lee por evdev.
+# Fn+F6 (código ATK 0x6B): KEY_TOUCHPAD_TOGGLE -> KEY_MACRO1, sin keysym en xkb
 evdev:name:Asus WMI hotkeys:*
  KEYBOARD_KEY_6b=macro1

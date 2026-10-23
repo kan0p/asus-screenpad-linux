@@ -2,11 +2,6 @@
 # screenpad - ScreenPad de la ZenBook Pro 15 UX580 en Linux (driver nvidia)
 # kan0p - https://github.com/kan0p/asus-screenpad-linux - GPL-3.0-or-later
 #
-# El panel cuelga de un puente HDMI Toshiba en la NVIDIA. El checksum del bloque CTA
-# de su EDID viene mal y el driver lo descarta, así que la salida queda "disconnected".
-# El script enciende el panel por WMI, lee el EDID por I2C, arregla el checksum
-# y lo carga como edid_override.
-#
 # uso: screenpad [on|off|replug [0-255]|status|brightness [0-255]|dump-edid ARCHIVO]
 
 set -u
@@ -53,8 +48,7 @@ power_state() {
     acpi 0x53545344 "b$(devid_le)00000000"
 }
 
-# Brillo por WMI y no por /sys/class/backlight: en 0 apaga solo la retroiluminación,
-# la salida sigue conectada y el touchpad sigue funcionando.
+# brillo WMI: en 0 apaga solo la retroiluminación
 brightness() {
     wmi_ready
     if [ -z "${1:-}" ]; then
@@ -173,8 +167,7 @@ reset_edid() {
 
 status_file() { echo "/sys/class/drm/$CARD-$CONN/status"; }
 
-# Tras encenderlo, el HDMI del panel marca "connected" solo en ~1 s; se consulta en
-# vez de esperar un tiempo fijo, sin forzar detect (cada detect avisa al compositor).
+# hasta 5 s a que una salida HDMI marque "connected", sin forzar detect
 wait_hotplug() {
     for i in $(seq 1 50); do
         for s in /sys/class/drm/$CARD-HDMI-A-*; do
@@ -190,10 +183,10 @@ saved_connector() {
     c=$(cat "$STATEDIR/conector" 2>/dev/null) && [ -e "/sys/class/drm/$CARD-$c/status" ] && echo "$c"
 }
 
-# el brillo no necesita la GPU y tiene que responder al instante
+# brillo: no espera a la GPU
 [ "${1:-}" = brightness ] && { brightness "${2:-}"; exit; }
 
-# nvidia-drm puede registrar la tarjeta varios segundos después de que arranca el servicio.
+# hasta 30 s a que nvidia-drm registre la tarjeta
 for i in $(seq 1 30); do
     CARD=$(nvidia_card) && break
     sleep 1
@@ -216,7 +209,7 @@ on)
     log "activado en $CONN ($(cat "$(status_file)"))"
     ;;
 replug)
-    # El brillo WMI se conserva con el panel apagado: se fija antes de encender.
+    # el brillo WMI persiste con el panel apagado: se fija antes de encender
     power 1
     [ -n "${2:-}" ] && brightness "$2"
     backlight_on
@@ -230,8 +223,7 @@ replug)
         echo "$CONN" > "$STATEDIR/conector"
         edid=$(pick_edid)
     fi
-    # COSMIC se queda con el EDID viejo si no ve la salida desenchufarse primero.
-    # Esos 2 s cubren también el arranque del panel (~1 s).
+    # 2 s desconectada para que el compositor relea el EDID
     echo off > "$(status_file)"
     sleep 2
     apply_edid "$edid"

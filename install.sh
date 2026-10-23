@@ -47,8 +47,8 @@ Icon=input-touchpad
 Categories=Settings;HardwareSettings;
 EOF
 
-# permisos: lectura de las teclas ASUS y del pad, y screenpad sin contraseña;
-# Fn+F6 deja de ser KEY_TOUCHPAD_TOGGLE para que el escritorio no la tome
+# permisos: lectura de las teclas ASUS y del pad, screenpad sin contraseña y
+# remapeo de Fn+F6 (hwdb)
 install -Dm644 udev/70-screenpad.rules /etc/udev/rules.d/70-screenpad.rules
 install -Dm644 udev/70-screenpad.hwdb /etc/udev/hwdb.d/70-screenpad.hwdb
 tmp=$(mktemp)

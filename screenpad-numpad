@@ -2,13 +2,7 @@
 # screenpad-numpad - teclado numérico virtual para Number Key
 # kan0p - https://github.com/kan0p/asus-screenpad-linux - GPL-3.0-or-later
 #
-# Crea con uinput un teclado que solo tiene las teclas del teclado numérico y las
-# presiona a pedido del launcher. A diferencia del teclado virtual de Wayland, las
-# apps ven teclas físicas reales (algunos navegadores ignoran las de wtype).
-#
-# Corre como root; recibe los pedidos por un socket que systemd abre solo para el
-# usuario de la sesión (screenpad-numpad.socket). Cada línea es el nombre de una
-# tecla de TECLAS; cualquier otra cosa se descarta.
+# Protocolo del socket: una línea por tecla, con un nombre de TECLAS; el resto se descarta.
 #
 # uso: screenpad-numpad [RUTA_SOCKET]   (sin argumento, el socket lo pasa systemd)
 

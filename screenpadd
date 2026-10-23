@@ -2,15 +2,6 @@
 # screenpadd - servicio de sesión del ScreenPad
 # kan0p - https://github.com/kan0p/asus-screenpad-linux - GPL-3.0-or-later
 #
-# Escucha Fn+F6 (KEY_MACRO1 en "Asus WMI hotkeys", ver udev/70-screenpad.hwdb)
-# y recorre los modos del pad:
-#   launcher  pantalla con apps, el launcher toma el pad
-#   monitor   monitor extendido normal, el pad es un touchpad
-#   dark      brillo 0: pantalla negra, el touchpad sigue funcionando
-#   off       panel sin alimentación y el pad bloqueado
-# Lee el pad y las teclas con evdev, así que no depende del compositor. Las órdenes al
-# firmware pasan por "sudo -n screenpad" (ver sudoers/screenpad).
-#
 # uso: screenpadd [--debug]
 
 import json, os, re, shutil, signal, sys, tomllib
@@ -48,14 +39,12 @@ ESTADO = os.path.join(XDG_STATE, "screenpad", "estado.json")
 DEBUG = "--debug" in sys.argv
 # Fn+F6 remapeada por hwdb; sin ella llega como KEY_TOUCHPAD_TOGGLE
 TECLAS_MODO = (ecodes.KEY_MACRO1, ecodes.KEY_TOUCHPAD_TOGGLE)
-# Pausa tras el último cambio antes de tocar el firmware, para no hacer un replug por
-# cada paso del ciclo: cosmic-comp se cuelga con varios replug seguidos.
+# pausa tras el último cambio de modo antes de tocar el firmware
 ESPERA_MS = 1500
 # Mínimo entre dos replug seguidos
 ENTRE_REPLUG_S = 10
-# Modos en los que el cursor no debe pasar al pad. COSMIC no admite huecos entre
-# salidas: el pad se pone en la esquina inferior derecha de la principal, donde
-# comparten solo 4 px de borde.
+# modos en los que el pad va a la esquina inferior derecha de la salida principal
+# (COSMIC exige al menos 4 px de borde en común entre salidas)
 MODOS_AISLADOS = ("launcher", "dark")
 CONECTOR = "/var/lib/screenpad/conector"
 GIRADAS = ("rotate90", "rotate270", "flipped-90", "flipped-270")
@@ -335,8 +324,7 @@ class Servicio:
         if self.fallo == deseado:
             return
         if encendido and not self.hw_encendido:
-            # replug y no on: tras "screenpad off" la salida se desconectó y COSMIC solo
-            # vuelve a leer el EDID si la ve desenchufarse y enchufarse otra vez.
+            # replug: tras "off" el compositor solo relee el EDID si la salida se reconecta
             falta = self.ultimo_replug + ENTRE_REPLUG_S * 1_000_000 - GLib.get_monotonic_time()
             if falta > 0:
                 debug(f"replug en {falta // 1000} ms")
