@@ -106,6 +106,7 @@ UTILIDADES = {
     "glasspad:temporizador": ("timer", "Temporizador", "temporizador"),
     "glasspad:monitor": ("monitor", "Monitor", "monitor"),
     "glasspad:zoom": ("zoom", "Zoom", "zoom"),
+    "glasspad:portapapeles": ("clipboard", "Portapapeles", "portapapeles"),
     "glasspad:ventanas": ("app-navigator", "Ventanas", "ventanas"),
 }
 # utilidades que se agregan solas al inicio la primera vez (Ventanas está en la barra)
@@ -126,6 +127,7 @@ CATEGORIAS = [
 ]
 
 SONIDO_ALARMA = "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga"
+POPUP_ANCHO, POPUP_ALTO = 480, 640
 ZOOM_PASOS_NORMAL = 12      # "alejar" repetido para volver al zoom normal
 MUSICA_OCULTAR_S = 600      # en pausa más que esto, el botón de música se oculta
 PAGINAS_UTILIDAD = {u[2] for u in UTILIDADES.values()}
@@ -304,6 +306,29 @@ scale.brillo slider { min-width: 54px; min-height: 54px; margin: -17px; border-r
 .control.grande { min-width: 170px; min-height: 170px; border-radius: 85px; }
 .control.grande image { -gtk-icon-size: 76px; }
 .pista-zoom { font-size: 28px; opacity: 0.75; }
+.pp-item { background: alpha(black, 0.42); border: 1px solid alpha(white, 0.14);
+           border-radius: 30px; padding: 24px 26px 18px 26px; }
+.pp-item.anclado { border: 2px solid #4d9bff; }
+.pp-item.presionado { background: alpha(white, 0.18); }
+.pp-texto { font-size: 28px; }
+.pp-imagen { min-height: 180px; border-radius: 16px; }
+.popup-item .pp-imagen { min-height: 110px; }
+window.glasspad-popup { background: transparent; }
+.popup-pp { background: alpha(#141b2b, 0.97); border: 1px solid alpha(white, 0.12);
+            border-radius: 18px; padding: 14px; min-width: 460px; color: white;
+            box-shadow: 0 10px 40px alpha(black, 0.5); }
+.popup-cabecera { margin: 2px 6px 10px 10px; }
+.popup-titulo { font-size: 17px; font-weight: 700; }
+.popup-lista { background: none; }
+.popup-item { background: alpha(white, 0.05); border-radius: 12px; margin: 4px 2px;
+              padding: 12px 14px 8px 14px; border: 1px solid transparent; }
+.popup-item:selected, .popup-item:focus { background: alpha(#4d9bff, 0.22);
+                                          border-color: alpha(#4d9bff, 0.6); }
+.popup-item.anclado { border-color: alpha(#4d9bff, 0.8); }
+.popup-item .pp-texto { font-size: 14px; }
+.popup-item .control.chico { min-width: 34px; min-height: 34px; border-radius: 17px; }
+.popup-item .control.chico image { -gtk-icon-size: 16px; }
+.popup-vacio { font-size: 15px; opacity: 0.7; padding: 40px; }
 """
 
 
@@ -1489,6 +1514,9 @@ class Launcher(Gtk.Application):
         self.ficha_clave = {}
         self.wl = None
         self.pellizco = None        # distancia inicial entre dos dedos en la página de zoom
+        self.popup = None           # panel del portapapeles en la pantalla principal
+        self.popup_abierto = False
+        self.ventana_previa = None
         self.ultima_actividad = 0
         self.pantalla_completa = False
         self.del_pad = leer_ventanas_pad()
@@ -1563,6 +1591,7 @@ class Launcher(Gtk.Application):
         self.paginas.add_named(self._pagina_temporizador(), "temporizador")
         self.paginas.add_named(self._pagina_monitor(), "monitor")
         self.paginas.add_named(self._pagina_zoom(), "zoom")
+        self.paginas.add_named(self._pagina_portapapeles(), "portapapeles")
         caja = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.estado_w = self._estado()
         self.paginas.connect("notify::visible-child-name", lambda p, _: self.estado_w.set_visible(
@@ -3238,6 +3267,226 @@ class Launcher(Gtk.Application):
             self._zoom(1 if razon > 1 else -1)
             self.pellizco = distancia
 
+    # ----- portapapeles -------------------------------------------------------
+
+    def _items_pp(self):
+        if not self.servicio:
+            return []
+        try:
+            r = self.servicio.call_sync("ClipboardItems", None, Gio.DBusCallFlags.NONE, 1000, None)
+            return r.unpack()[0]
+        except GLib.Error as e:
+            debug(f"portapapeles: {e.message}")
+            return []
+
+    def _pp(self, metodo, *args, firma=None):
+        if self.servicio:
+            self.servicio.call(metodo, GLib.Variant(firma, args) if firma else None,
+                               Gio.DBusCallFlags.NONE, 1000, None, None)
+
+    def _pegar_pp(self, ident, retraso=0):
+        terminal = self._perfil(self._app_activa())[0] == "terminal"
+        if retraso:
+            GLib.timeout_add(retraso, lambda: self._pp("ClipboardPaste", ident, terminal,
+                                                       firma="(ub)") and False)
+        else:
+            self._pp("ClipboardPaste", ident, terminal, firma="(ub)")
+
+    @staticmethod
+    def _vista_previa(texto):
+        return " ".join(texto.split())[:400]
+
+    def _contenido_pp(self, ident, tipo, contenido, anclado):
+        """Vista previa y botones de un elemento; la acción de pegar la pone quien lo usa."""
+        caja = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        if tipo == "imagen":
+            caja.append(Gtk.Picture(file=Gio.File.new_for_path(contenido), can_shrink=True,
+                                    content_fit=Gtk.ContentFit.CONTAIN, hexpand=True,
+                                    css_classes=["pp-imagen"]))
+        else:
+            caja.append(Gtk.Label(label=self._vista_previa(contenido), xalign=0, wrap=True,
+                                  lines=3, ellipsize=3, max_width_chars=1, hexpand=True,
+                                  natural_wrap_mode=Gtk.NaturalWrapMode.WORD,
+                                  css_classes=["pp-texto"]))
+        botones = Gtk.Box(spacing=12, halign=Gtk.Align.END)
+        anclar = self._control("view-pin-symbolic",
+                               lambda: self._pp("ClipboardPin", ident, not anclado, firma="(ub)"),
+                               ("chico", "activo") if anclado else ("chico",))
+        anclar.set_tooltip_text("Desanclar" if anclado else "Anclar")
+        botones.append(anclar)
+        borrar = self._control("user-trash-symbolic",
+                               lambda: self._pp("ClipboardDelete", ident, firma="(u)"), ("chico",))
+        borrar.set_tooltip_text("Eliminar")
+        botones.append(borrar)
+        caja.append(botones)
+        return caja
+
+    # en el pad
+
+    def _pagina_portapapeles(self):
+        cabecera = Gtk.Box(spacing=20)
+        cabecera.append(Gtk.Label(label="Portapapeles", xalign=0, hexpand=True,
+                                  css_classes=["titulo-perfil"]))
+        cabecera.append(self._accion(Gtk.Button(label="Borrar todo", css_classes=["chip"]),
+                                     lambda: self._pp("ClipboardClear")))
+        self.lista_pp = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True,
+                                    min_children_per_line=2, max_children_per_line=2,
+                                    row_spacing=20, column_spacing=20, valign=Gtk.Align.START)
+        desplazable = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True,
+                                         child=self.lista_pp)
+        caja = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=22,
+                       css_classes=["teclado", "atajos"])
+        caja.append(cabecera)
+        caja.append(desplazable)
+        self.paginas.connect("notify::visible-child-name", lambda p, _: (
+            self._llenar_pp() if p.get_visible_child_name() == "portapapeles" else None))
+        return caja
+
+    def _llenar_pp(self):
+        self._vaciar(self.lista_pp)
+        items = self._items_pp()
+        if not items:
+            self.lista_pp.append(Gtk.Label(label="Copia algo y aparecerá aquí",
+                                           css_classes=["vacio"]))
+            return
+        for ident, tipo, contenido, anclado in items:
+            tarjeta = Gtk.Box(css_classes=["pp-item", "anclado"] if anclado else ["pp-item"])
+            tarjeta.append(self._contenido_pp(ident, tipo, contenido, anclado))
+            self.lista_pp.append(self._accion(tarjeta, lambda i=ident: self._pegar_pp(i)))
+
+    # panel flotante en la pantalla principal
+
+    def _crear_popup(self):
+        pad = self._conector_pad()
+        monitores = Gdk.Display.get_default().get_monitors()
+        principal = next((monitores.get_item(i) for i in range(monitores.get_n_items())
+                          if monitores.get_item(i).get_connector() != pad), None)
+        v = Gtk.ApplicationWindow(application=self, css_classes=["glasspad-popup"])
+        Capa.init_for_window(v)
+        Capa.set_namespace(v, "glasspad-portapapeles")
+        if principal:
+            Capa.set_monitor(v, principal)
+        Capa.set_anchor(v, Capa.Edge.BOTTOM, True)
+        Capa.set_anchor(v, Capa.Edge.RIGHT, True)
+        Capa.set_margin(v, Capa.Edge.BOTTOM, 24)
+        Capa.set_margin(v, Capa.Edge.RIGHT, 24)
+        Capa.set_keyboard_mode(v, Capa.KeyboardMode.NONE)
+        Capa.set_layer(v, Capa.Layer.BACKGROUND)
+
+        cabecera = Gtk.Box(spacing=12, css_classes=["popup-cabecera"])
+        cabecera.append(Gtk.Label(label="Portapapeles", xalign=0, hexpand=True,
+                                  css_classes=["popup-titulo"]))
+        borrar = Gtk.Button(label="Borrar todo", css_classes=["flat"])
+        borrar.connect("clicked", lambda _b: self._pp("ClipboardClear"))
+        cabecera.append(borrar)
+        self.lista_popup = Gtk.ListBox(selection_mode=Gtk.SelectionMode.BROWSE,
+                                       activate_on_single_click=True, css_classes=["popup-lista"])
+        self.lista_popup.connect("row-activated", lambda _l, fila: self._popup_pegar(fila))
+        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, css_classes=["popup-pp"])
+        panel.append(cabecera)
+        panel.append(Gtk.ScrolledWindow(child=self.lista_popup, vexpand=True,
+                                        hscrollbar_policy=Gtk.PolicyType.NEVER,
+                                        min_content_height=POPUP_ALTO - 80))
+        self.pila_popup = Gtk.Stack(hhomogeneous=False, vhomogeneous=False)
+        self.pila_popup.add_named(Gtk.Box(), "nada")
+        self.pila_popup.add_named(panel, "panel")
+        v.set_child(self.pila_popup)
+        v.set_default_size(1, 1)
+
+        teclas = Gtk.EventControllerKey()
+        teclas.connect("key-pressed", lambda _c, k, _code, _e: (
+            self._cerrar_popup() or True) if k == Gdk.KEY_Escape else False)
+        v.add_controller(teclas)
+        v.connect("notify::is-active", self._popup_foco)
+        v.present()
+        self.popup = v
+
+    def _mostrar_popup(self):
+        if self.popup is None:
+            self._crear_popup()
+        self._llenar_popup()
+        v = self.popup
+        # la ventana a la que hay que devolver el foco al cerrar
+        self.ventana_previa = next((c for c, w in self.wl.lista() if "activa" in w["estados"]),
+                                   None) if self.wl else None
+        self.pila_popup.set_visible_child_name("panel")
+        v.set_default_size(POPUP_ANCHO, POPUP_ALTO)
+        Capa.set_layer(v, Capa.Layer.OVERLAY)
+        # EXCLUSIVE para recibir el foco al abrir; luego ON_DEMAND, así perderlo lo cierra
+        Capa.set_keyboard_mode(v, Capa.KeyboardMode.EXCLUSIVE)
+        self.popup_abierto = True
+        GLib.timeout_add(400, lambda: self.popup_abierto and Capa.set_keyboard_mode(
+            v, Capa.KeyboardMode.ON_DEMAND) and False)
+        primera = self.lista_popup.get_row_at_index(0)
+        if primera:
+            self.lista_popup.select_row(primera)
+            primera.grab_focus()
+
+    def _cerrar_popup(self):
+        if not self.popup or not self.popup_abierto:
+            return
+        self.popup_abierto = False
+        v = self.popup
+        Capa.set_keyboard_mode(v, Capa.KeyboardMode.NONE)
+        self.pila_popup.set_visible_child_name("nada")
+        Capa.set_layer(v, Capa.Layer.BACKGROUND)
+        v.set_default_size(1, 1)
+        if self.ventana_previa is not None and self.wl:
+            self.wl.activar(self.ventana_previa)
+
+    def _popup_foco(self, v, _p):
+        if self.popup_abierto and not v.is_active() and \
+                Capa.get_keyboard_mode(v) == Capa.KeyboardMode.ON_DEMAND:
+            self._cerrar_popup()
+
+    def _llenar_popup(self):
+        self._vaciar(self.lista_popup)
+        items = self._items_pp()
+        if not items:
+            vacio = Gtk.ListBoxRow(activatable=False, selectable=False)
+            vacio.set_child(Gtk.Label(label="Copia algo y aparecerá aquí",
+                                      css_classes=["popup-vacio"]))
+            self.lista_popup.append(vacio)
+            return
+        for ident, tipo, contenido, anclado in items:
+            fila = Gtk.ListBoxRow(css_classes=["popup-item", "anclado"] if anclado else ["popup-item"])
+            fila.ident = ident
+            fila.set_child(self._contenido_pp(ident, tipo, contenido, anclado))
+            self.lista_popup.append(fila)
+
+    def _popup_pegar(self, fila):
+        ident = getattr(fila, "ident", None)
+        if ident is None:
+            return
+        self._cerrar_popup()
+        # Ctrl+V cuando la ventana anterior ya recuperó el foco
+        self._pegar_pp(ident, retraso=250)
+
+    def _portapapeles_cambio(self):
+        if self.ventana and self.paginas.get_visible_child_name() == "portapapeles":
+            self._llenar_pp()
+        if self.popup_abierto:
+            seleccion = self.lista_popup.get_selected_row()
+            i = seleccion.get_index() if seleccion else 0
+            self._llenar_popup()
+            fila = self.lista_popup.get_row_at_index(i) or self.lista_popup.get_row_at_index(0)
+            if fila:
+                self.lista_popup.select_row(fila)
+                fila.grab_focus()
+
+    def _pedido_portapapeles(self, lugar):
+        log(f"portapapeles: pedido para {lugar} (modo {self.modo}, "
+            f"{'con' if self.ventana else 'sin'} ventana en el pad)")
+        if lugar == "pad" and self.ventana and self.modo == "launcher":
+            self._cerrar_hoja()
+            self._cerrar_centro()
+            self._cerrar_musica()
+            if self._en_touchpad():
+                self._volver_launcher()
+            self._ir("portapapeles")
+        else:
+            self._mostrar_popup()
+
     # ----- barra -------------------------------------------------------------
 
     def _pie(self):
@@ -3524,6 +3773,10 @@ class Launcher(Gtk.Application):
     def _señal(self, _proxy, _emisor, señal, params):
         if señal == "ModeChanged":
             self._aplicar_modo(params.unpack()[0])
+        elif señal == "ClipboardChanged":
+            self._portapapeles_cambio()
+        elif señal == "ClipboardRequested":
+            self._pedido_portapapeles(params.unpack()[0])
 
     def _aplicar_modo(self, modo):
         debug(f"modo: {modo}")

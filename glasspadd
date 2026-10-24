@@ -4,7 +4,8 @@
 #
 # uso: glasspadd [--debug]
 
-import json, os, re, shutil, signal, sys, tomllib
+import array, hashlib, json, os, re, shutil, signal, socket, struct, sys, threading, time
+import tomllib
 
 import evdev
 from evdev import ecodes
@@ -35,6 +36,14 @@ XDG_CONFIG = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"
 XDG_STATE = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
 CONFIG = os.path.join(XDG_CONFIG, "glasspad", "config.toml")
 ESTADO = os.path.join(XDG_STATE, "glasspad", "estado.json")
+ANCLADOS = os.path.join(XDG_STATE, "glasspad", "portapapeles.json")
+IMAGENES_ANCLADAS = os.path.join(XDG_STATE, "glasspad", "portapapeles")
+# imágenes del historial no anclado; tmpfs privado del usuario
+IMAGENES_TEMPORALES = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "glasspad",
+                                   "portapapeles")
+EXTENSION = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif",
+             "image/bmp": "bmp"}
+MAX_HISTORIAL = 25          # sin contar los anclados
 
 DEBUG = "--debug" in sys.argv
 # Fn+F6 remapeada por hwdb; sin ella llega como KEY_TOUCHPAD_TOGGLE
@@ -60,6 +69,18 @@ INTERFAZ = f"""
     <method name="SetBrightness"><arg name="level" type="u" direction="in"/></method>
     <method name="Activity"/>
     <method name="SetFullscreen"><arg name="active" type="b" direction="in"/></method>
+    <method name="ShowClipboard"/>
+    <method name="ClipboardItems"><arg name="items" type="a(ussb)" direction="out"/></method>
+    <method name="ClipboardPaste">
+      <arg name="id" type="u" direction="in"/><arg name="shift" type="b" direction="in"/>
+    </method>
+    <method name="ClipboardPin">
+      <arg name="id" type="u" direction="in"/><arg name="pinned" type="b" direction="in"/>
+    </method>
+    <method name="ClipboardDelete"><arg name="id" type="u" direction="in"/></method>
+    <method name="ClipboardClear"/>
+    <signal name="ClipboardChanged"/>
+    <signal name="ClipboardRequested"><arg name="place" type="s"/></signal>
     <property name="Mode" type="s" access="read"/>
     <property name="Brightness" type="u" access="read"/>
     <property name="Cycle" type="as" access="read"/>
@@ -94,7 +115,8 @@ def leer_config():
             "idle_dim_minutes": 2,
             "fullscreen_dim": True,
             "dim_level": 5,
-            "battery_mode": ""}
+            "battery_mode": "",
+            "clipboard_history": True}
     try:
         with open(CONFIG, "rb") as f:
             conf.update(tomllib.load(f))
@@ -161,6 +183,235 @@ def buscar_dispositivo(nombre):
     return None
 
 
+class Portapapeles:
+    """Cliente Wayland propio para ext_data_control_v1: lee cada texto o imagen copiados y
+    pone contenido en el portapapeles. Los descriptores viajan con SCM_RIGHTS."""
+
+    EVENTOS = {
+        "wl_display": [("error", "ous"), ("delete_id", "u")],
+        "wl_registry": [("global", "usu"), ("global_remove", "u")],
+        "wl_seat": [("capabilities", "u"), ("name", "s")],
+        "ext_data_control_device_v1": [("data_offer", "n"), ("selection", "o"),
+                                       ("finished", ""), ("primary_selection", "o")],
+        "ext_data_control_offer_v1": [("offer", "s")],
+        "ext_data_control_source_v1": [("send", "sh"), ("cancelled", "")],
+    }
+    NUEVOS = {("ext_data_control_device_v1", "data_offer"): "ext_data_control_offer_v1"}
+    TEXTO = ("text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "STRING", "TEXT")
+    SECRETO = "x-kde-passwordManagerHint"      # lo marcan los gestores de contraseñas
+    IMAGEN = ("image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp")
+    MAX_TEXTO = 1 << 20
+    MAX_IMAGEN = 10 << 20
+
+    def __init__(self, al_copiar, al_vaciar):
+        self.al_copiar = al_copiar      # (tipo "texto"|"imagen", bytes, mime)
+        self.al_vaciar = al_vaciar
+        self.objetos = {1: "wl_display"}
+        self.siguiente = 2
+        self.globales = {}
+        self.ofertas = {}           # id -> set de tipos MIME
+        self.actual = None          # oferta de la selección vigente
+        self.fuentes = {}           # id de nuestra fuente -> bytes que entrega
+        self.dispositivo = None
+        self.buf = b""
+        self.fds = []
+        self.sock = None
+        ruta = os.environ.get("WAYLAND_DISPLAY", "wayland-0")
+        if not ruta.startswith("/"):
+            ruta = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), ruta)
+        try:
+            self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.sock.connect(ruta)
+        except OSError as e:
+            log(f"portapapeles: sin conexión Wayland: {e}")
+            self.sock = None
+            return
+        self.sock.setblocking(False)
+        self.fuente = GLib.io_add_watch(self.sock.fileno(), GLib.PRIORITY_DEFAULT,
+                                        GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, self._leer)
+        self.registro = self._nuevo("wl_registry")
+        self._enviar(1, 1, self._u(self.registro))
+
+    @staticmethod
+    def _u(v):
+        return struct.pack("=I", v & 0xFFFFFFFF)
+
+    @staticmethod
+    def _texto(t):
+        b = t.encode() + b"\0"
+        return Portapapeles._u(len(b)) + b + b"\0" * (-len(b) % 4)
+
+    def _nuevo(self, interfaz):
+        i = self.siguiente
+        self.siguiente += 1
+        self.objetos[i] = interfaz
+        return i
+
+    def _enviar(self, objeto, opcode, *partes, fd=None):
+        if not self.sock:
+            return
+        datos = b"".join(partes)
+        mensaje = self._u(objeto) + self._u(((8 + len(datos)) << 16) | opcode) + datos
+        anexos = [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", [fd]))] if fd else []
+        try:
+            self.sock.sendmsg([mensaje], anexos)
+        except OSError as e:
+            log(f"portapapeles: {e}")
+
+    def _leer(self, _fd, _cond):
+        try:
+            datos, anexos, _f, _d = self.sock.recvmsg(65536, socket.CMSG_SPACE(16 * 4))
+        except BlockingIOError:
+            return True
+        except OSError:
+            datos, anexos = b"", []
+        for nivel, tipo, crudo in anexos:
+            if nivel == socket.SOL_SOCKET and tipo == socket.SCM_RIGHTS:
+                fds = array.array("i")
+                fds.frombytes(crudo[:len(crudo) - len(crudo) % fds.itemsize])
+                self.fds.extend(fds)
+        if not datos:
+            log("portapapeles: se cerró la conexión Wayland")
+            self.sock = None
+            return False
+        self.buf += datos
+        while len(self.buf) >= 8:
+            objeto, op = struct.unpack_from("=II", self.buf)
+            largo, opcode = op >> 16, op & 0xFFFF
+            if len(self.buf) < largo:
+                break
+            cuerpo, self.buf = self.buf[8:largo], self.buf[largo:]
+            self._evento(objeto, opcode, cuerpo)
+        return True
+
+    def _evento(self, objeto, opcode, cuerpo):
+        interfaz = self.objetos.get(objeto)
+        tabla = self.EVENTOS.get(interfaz)
+        if not tabla or opcode >= len(tabla):
+            return
+        nombre, firma = tabla[opcode]
+        args, pos = [], 0
+        for t in firma:
+            if t in "uon":
+                args.append(struct.unpack_from("=I", cuerpo, pos)[0])
+                pos += 4
+            elif t == "s":
+                n = struct.unpack_from("=I", cuerpo, pos)[0]
+                args.append(cuerpo[pos + 4:pos + 3 + n].decode(errors="replace") if n else "")
+                pos += 4 + n + (-n % 4)
+            elif t == "h":
+                args.append(self.fds.pop(0) if self.fds else -1)
+            if t == "n":
+                self.objetos[args[-1]] = self.NUEVOS[(interfaz, nombre)]
+        manejador = getattr(self, f"_{interfaz}_{nombre}", None)
+        if manejador:
+            manejador(objeto, *args)
+
+    def _wl_display_error(self, _o, objeto, codigo, mensaje):
+        log(f"portapapeles: error Wayland en {self.objetos.get(objeto)} ({codigo}): {mensaje}")
+
+    def _wl_registry_global(self, _o, nombre, interfaz, _version):
+        if interfaz in ("wl_seat", "ext_data_control_manager_v1") and interfaz not in self.globales:
+            i = self._nuevo(interfaz)
+            self._enviar(self.registro, 0, self._u(nombre), self._texto(interfaz), self._u(1),
+                         self._u(i))
+            self.globales[interfaz] = i
+            if len(self.globales) == 2:
+                self.dispositivo = self._nuevo("ext_data_control_device_v1")
+                self._enviar(self.globales["ext_data_control_manager_v1"], 1,
+                             self._u(self.dispositivo), self._u(self.globales["wl_seat"]))
+
+    def _ext_data_control_device_v1_data_offer(self, _d, oferta):
+        self.ofertas[oferta] = set()
+
+    def _ext_data_control_offer_v1_offer(self, oferta, mime):
+        self.ofertas.setdefault(oferta, set()).add(mime)
+
+    def _ext_data_control_device_v1_selection(self, _d, oferta):
+        anterior, self.actual = self.actual, oferta or None
+        if anterior and anterior != self.actual:
+            self._soltar_oferta(anterior)
+        if not oferta:
+            self.al_vaciar()
+            return
+        tipos = self.ofertas.get(oferta, set())
+        if self.SECRETO in tipos:
+            return
+        mime = next((m for m in self.IMAGEN if m in tipos), None)
+        tipo, limite = "imagen", self.MAX_IMAGEN
+        if mime is None:
+            mime = next((m for m in self.TEXTO if m in tipos), None)
+            tipo, limite = "texto", self.MAX_TEXTO
+        if mime is None:
+            return
+        lectura, escritura = os.pipe()
+        self._enviar(oferta, 0, self._texto(mime), fd=escritura)    # receive
+        os.close(escritura)
+        os.set_blocking(lectura, False)
+        partes = []
+
+        def leer(fd, _cond):
+            try:
+                trozo = os.read(fd, 65536)
+            except BlockingIOError:
+                return True
+            except OSError:
+                trozo = b""
+            if trozo and sum(map(len, partes)) <= limite:
+                partes.append(trozo)
+                return True
+            os.close(fd)
+            datos = b"".join(partes)
+            if tipo == "imagen" and len(datos) > limite:
+                log(f"portapapeles: imagen de más de {limite >> 20} MB, no se guarda")
+            elif datos.strip():
+                self.al_copiar(tipo, datos, mime)
+            return False
+        GLib.io_add_watch(lectura, GLib.PRIORITY_DEFAULT, GLib.IO_IN | GLib.IO_HUP, leer)
+
+    def _ext_data_control_device_v1_primary_selection(self, _d, oferta):
+        if oferta and oferta != self.actual:
+            self._soltar_oferta(oferta)
+
+    def _soltar_oferta(self, oferta):
+        if oferta in self.ofertas:
+            del self.ofertas[oferta]
+            self._enviar(oferta, 1)                                 # destroy
+            self.objetos.pop(oferta, None)
+
+    def _ext_data_control_source_v1_send(self, fuente, _mime, fd):
+        datos = self.fuentes.get(fuente, b"")
+
+        def escribir():
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    f.write(datos)
+            except OSError:
+                pass
+        threading.Thread(target=escribir, daemon=True).start()
+
+    def _ext_data_control_source_v1_cancelled(self, fuente):
+        self.fuentes.pop(fuente, None)
+        self._enviar(fuente, 1)                                     # destroy
+        self.objetos.pop(fuente, None)
+
+    def disponible(self):
+        return bool(self.sock and self.dispositivo)
+
+    def copiar(self, datos, mimes):
+        """Pone 'datos' en el portapapeles, ofrecidos con los tipos 'mimes'."""
+        gestor = self.globales.get("ext_data_control_manager_v1")
+        if not gestor or not self.dispositivo:
+            return False
+        fuente = self._nuevo("ext_data_control_source_v1")
+        self._enviar(gestor, 0, self._u(fuente))                    # create_data_source
+        for mime in mimes:
+            self._enviar(fuente, 0, self._texto(mime))              # offer
+        self.fuentes[fuente] = datos
+        self._enviar(self.dispositivo, 0, self._u(fuente))          # set_selection
+        return True
+
+
 class Servicio:
     def __init__(self, loop):
         self.loop = loop
@@ -182,6 +433,10 @@ class Servicio:
         self.observador = None      # pad sin tomar, para ver actividad en modo monitor
         self.en_bateria = None
         self.modo_antes_bateria = None
+        self.historial = []         # {"id", "tipo", "texto" | "archivo" y "mime", "anclado"}
+        self.n_copia = 0
+        self.pp = None
+        self.ultimo = None          # lo último copiado, para reponerlo si su app se cierra
         self.ultimo_replug = 0      # GLib.get_monotonic_time() del último replug
 
         self.teclas = None
@@ -204,6 +459,8 @@ class Servicio:
         self._abrir_teclas()
         self._consultar_hardware()
         self._reiniciar_atenuado()
+        self._cargar_anclados()
+        self._activar_portapapeles()
         self.monitor_config = Gio.File.new_for_path(CONFIG).monitor_file(
             Gio.FileMonitorFlags.WATCH_MOVES, None)
         self.monitor_config.connect("changed", self._config_cambiada)
@@ -218,6 +475,7 @@ class Servicio:
         self._bloquear_pad(self._deseado()[2])
         self._ubicar_salida()
         self._reiniciar_atenuado()
+        self._activar_portapapeles()
         self.reconciliar()
 
     # ----- modos ------------------------------------------------------------
@@ -635,6 +893,181 @@ class Servicio:
                                  Gio.DBusSignalFlags.NONE, al_dormir)
         self._sistema = sistema
 
+    # ----- portapapeles -------------------------------------------------------
+
+    def _activar_portapapeles(self):
+        si = bool(self.conf["clipboard_history"])
+        if si and self.pp is None:
+            shutil.rmtree(IMAGENES_TEMPORALES, ignore_errors=True)
+            os.makedirs(IMAGENES_TEMPORALES, mode=0o700, exist_ok=True)
+            self.pp = Portapapeles(self._copiado, self._vaciado)
+        elif not si and self.pp is not None:
+            if self.pp.sock:
+                GLib.source_remove(self.pp.fuente)
+                self.pp.sock.close()
+            self.pp = None
+            self.ultimo = None
+            for h in [h for h in self.historial if not h["anclado"]]:
+                self._olvidar(h)
+            self._cambio_portapapeles()
+
+    def _cargar_anclados(self):
+        try:
+            with open(ANCLADOS) as f:
+                guardados = json.load(f)
+        except (OSError, ValueError):
+            guardados = []
+        for g in guardados if isinstance(guardados, list) else []:
+            if isinstance(g, str):
+                g = {"tipo": "texto", "texto": g}
+            if not isinstance(g, dict):
+                continue
+            if g.get("tipo") == "imagen":
+                archivo = os.path.join(IMAGENES_ANCLADAS, os.path.basename(str(g.get("archivo"))))
+                if not os.path.isfile(archivo):
+                    continue
+                h = {"tipo": "imagen", "archivo": archivo, "mime": g.get("mime", "image/png"),
+                     "huella": g.get("huella", "")}
+            elif isinstance(g.get("texto"), str):
+                h = {"tipo": "texto", "texto": g["texto"]}
+            else:
+                continue
+            self.n_copia += 1
+            self.historial.append({"id": self.n_copia, "anclado": True, **h})
+
+    def _guardar_anclados(self):
+        guardados = []
+        for h in self.historial:
+            if not h["anclado"]:
+                continue
+            if h["tipo"] == "imagen":
+                guardados.append({"tipo": "imagen", "archivo": os.path.basename(h["archivo"]),
+                                  "mime": h["mime"], "huella": h["huella"]})
+            else:
+                guardados.append({"tipo": "texto", "texto": h["texto"]})
+        os.makedirs(os.path.dirname(ANCLADOS), exist_ok=True)
+        tmp = ANCLADOS + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(guardados, f)
+        os.replace(tmp, ANCLADOS)
+
+    def _mover_imagen(self, h, carpeta):
+        """Lleva el archivo de una imagen a otra carpeta (temporal o de anclados)."""
+        destino = os.path.join(carpeta, os.path.basename(h["archivo"]))
+        if destino != h["archivo"]:
+            os.makedirs(carpeta, mode=0o700, exist_ok=True)
+            shutil.move(h["archivo"], destino)
+            h["archivo"] = destino
+
+    def _olvidar(self, h):
+        self.historial.remove(h)
+        if h["tipo"] == "imagen":
+            try:
+                os.remove(h["archivo"])
+            except OSError:
+                pass
+
+    def _copiado(self, tipo, datos, mime):
+        if tipo == "imagen":
+            huella = hashlib.sha1(datos).hexdigest()
+            previo = next((h for h in self.historial if h.get("huella") == huella), None)
+        else:
+            texto = datos.decode(errors="replace")
+            previo = next((h for h in self.historial if h.get("texto") == texto), None)
+        if previo is None:
+            self.n_copia += 1
+            if tipo == "imagen":
+                archivo = os.path.join(IMAGENES_TEMPORALES,
+                                       f"{huella}.{EXTENSION.get(mime, 'img')}")
+                with open(archivo, "wb") as f:
+                    f.write(datos)
+                previo = {"id": self.n_copia, "tipo": "imagen", "archivo": archivo,
+                          "mime": mime, "huella": huella, "anclado": False}
+            else:
+                previo = {"id": self.n_copia, "tipo": "texto", "texto": texto, "anclado": False}
+        elif not previo["anclado"]:
+            self.historial.remove(previo)
+        self.ultimo = previo
+        if not previo["anclado"]:
+            self.historial.insert(0, previo)
+            sueltos = [h for h in self.historial if not h["anclado"]]
+            for h in sueltos[MAX_HISTORIAL:]:
+                self._olvidar(h)
+        self._cambio_portapapeles()
+
+    def _vaciado(self):
+        """La app dueña del portapapeles se cerró: se repone lo último copiado."""
+        if self.ultimo and self.ultimo in self.historial:
+            debug("portapapeles vacío: se repone lo último copiado")
+            GLib.timeout_add(100, lambda: self._poner_en_portapapeles(self.ultimo) and False)
+
+    def _poner_en_portapapeles(self, h):
+        if not self.pp:
+            return False
+        if h["tipo"] == "imagen":
+            try:
+                with open(h["archivo"], "rb") as f:
+                    datos = f.read()
+            except OSError:
+                return False
+            return self.pp.copiar(datos, [h["mime"]])
+        return self.pp.copiar(h["texto"].encode(), Portapapeles.TEXTO)
+
+    def _cambio_portapapeles(self):
+        self.bus.emit_signal(None, RUTA, BUS, "ClipboardChanged", None)
+
+    def _item(self, ident):
+        h = next((h for h in self.historial if h["id"] == ident), None)
+        if h is None:
+            raise ValueError("ese elemento ya no está en el historial")
+        return h
+
+    def items_portapapeles(self):
+        orden = [h for h in self.historial if h["anclado"]] + \
+                [h for h in self.historial if not h["anclado"]]
+        return [(h["id"], h["tipo"], h["archivo"] if h["tipo"] == "imagen" else h["texto"],
+                 h["anclado"]) for h in orden]
+
+    def pegar(self, ident, shift):
+        h = self._item(ident)
+        if not self._poner_en_portapapeles(h):
+            raise ValueError("el portapapeles no está disponible")
+        args = ["-M", "ctrl", *(["-M", "shift"] if shift else []), "-k", "v",
+                *(["-m", "shift"] if shift else []), "-m", "ctrl"]
+
+        def ctrl_v():
+            try:
+                Gio.Subprocess.new(["wtype", *args], Gio.SubprocessFlags.STDERR_SILENCE)
+            except GLib.Error as e:
+                log(f"pegar: {e.message}")
+            return False
+        GLib.timeout_add(120, ctrl_v)
+
+    def anclar(self, ident, si):
+        h = self._item(ident)
+        h["anclado"] = bool(si)
+        if h["tipo"] == "imagen":
+            self._mover_imagen(h, IMAGENES_ANCLADAS if si else IMAGENES_TEMPORALES)
+        self._guardar_anclados()
+        self._cambio_portapapeles()
+
+    def borrar(self, ident):
+        h = self._item(ident)
+        self._olvidar(h)
+        if h["anclado"]:
+            self._guardar_anclados()
+        self._cambio_portapapeles()
+
+    def borrar_todo(self):
+        for h in [h for h in self.historial if not h["anclado"]]:
+            self._olvidar(h)
+        self._cambio_portapapeles()
+
+    def mostrar_portapapeles(self):
+        lugar = "pad" if self.modo == "launcher" and self._hay_launcher() else "principal"
+        log(f"portapapeles: se muestra en {'el pad' if lugar == 'pad' else 'la pantalla principal'}")
+        self.bus.emit_signal(None, RUTA, BUS, "ClipboardRequested", GLib.Variant("(s)", (lugar,)))
+
     # ----- batería -----------------------------------------------------------
 
     def _escuchar_bateria(self):
@@ -707,6 +1140,19 @@ class Servicio:
                 self.actividad()
             elif metodo == "SetFullscreen":
                 self.pantalla_completa(params.unpack()[0])
+            elif metodo == "ShowClipboard":
+                self.mostrar_portapapeles()
+            elif metodo == "ClipboardItems":
+                inv.return_value(GLib.Variant("(a(ussb))", (self.items_portapapeles(),)))
+                return
+            elif metodo == "ClipboardPaste":
+                self.pegar(*params.unpack())
+            elif metodo == "ClipboardPin":
+                self.anclar(*params.unpack())
+            elif metodo == "ClipboardDelete":
+                self.borrar(params.unpack()[0])
+            elif metodo == "ClipboardClear":
+                self.borrar_todo()
             inv.return_value(None)
         except ValueError as e:
             inv.return_dbus_error(f"{BUS}.Error", str(e))

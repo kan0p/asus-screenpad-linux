@@ -112,6 +112,7 @@ El **Control Center** sube desde la barra: brillo del pad (se arrastra con el de
 - **Temporizador y cronómetro**: temporizador con presets y ajuste de a 10 s, alarma y aviso al terminar; cronómetro con vueltas.
 - **Monitor**: CPU y temperatura, memoria, GPU NVIDIA, consumo de la batería, red y disco, con gráfico de los últimos 60 s. Solo mide mientras está abierto.
 - **Zoom**: acercar, alejar y volver a normal con el zoom de COSMIC, o pellizcando con dos dedos sobre el pad.
+- **Portapapeles**: historial de los últimos 25 textos e imágenes copiados (imágenes de hasta 10 MB), con anclar y borrar. Tocar un elemento lo pega en la app activa.
 - **Ventanas**: las ventanas abiertas, agrupadas por pantalla. Tocar una la trae al frente; cada una se puede minimizar, cerrar o mover entre la pantalla principal y el pad.
 
 Son mosaicos que se pueden poner en el inicio; al instalar (o al llegar una nueva) aparecen solos, salvo Ventanas, que está en la barra.
@@ -121,6 +122,12 @@ Las ventanas que están en el pad pasan solas a la pantalla principal al salir d
 ### Música
 
 Cuando una app reproduce algo (YouTube en el navegador, Spotify, VLC…), la barra muestra un ecualizador animado con el título. Lo detecta por MPRIS, igual que el panel del escritorio. Al tocarlo se abre una ventana con la carátula, el progreso (se arrastra para adelantar), anterior, pausa y siguiente, y el volumen general del sistema. Aleatorio, repetir e "Ir a la app" aparecen solo si la app los admite. Con varias apps a la vez, arriba se elige cuál controlar. El botón se oculta si el reproductor se detiene o tras 10 minutos en pausa.
+
+### Portapapeles
+
+`glasspadd` guarda el historial con el protocolo `ext_data_control_v1` de Wayland: lo copiado queda solo en memoria (las imágenes, en `/run/user/…`, privado del usuario) y lo anclado se guarda en `~/.local/state/glasspad/`. Se ignora lo que los gestores de contraseñas marcan como secreto. Si la app que copió algo se cierra, GlassPad vuelve a poner lo último copiado en el portapapeles.
+
+Con **Super+V** (se registra en COSMIC desde el Configurator) el historial aparece en el pad si está en modo `launcher`, o en un panel abajo a la derecha de la pantalla principal en los demás modos: flechas, Enter para pegar y Escape para cerrar. En las terminales pega con Ctrl+Shift+V. `glasspad clipboard` hace lo mismo desde la terminal.
 
 ### Teclado numérico virtual
 
@@ -135,11 +142,12 @@ Si el servicio no está, el launcher usa `wtype`.
 
 ### Configuración
 
-**GlassPad Configurator** (`glasspad-config`; Ajustes en el Control Center, o "GlassPad Configurator" en el menú de apps) se abre en la pantalla principal y tiene tres pestañas:
+**GlassPad Configurator** (`glasspad-config`; Ajustes en el Control Center, o "GlassPad Configurator" en el menú de apps) se abre en la pantalla principal y tiene cuatro pestañas:
 
 - **Apariencia**: fondo, difuminado y cuánto oscurecerlo.
 - **ScreenPad**: modos de Fn+F6, modo al iniciar sesión, bloquear el pad en apagado, alejar el cursor, atenuar, modo con batería y touchpad temporal.
 - **Quick Key**: elegir el perfil (generales o de una app) y agregar, editar, reordenar, quitar o restablecer atajos, grabando la combinación con el teclado.
+- **Portapapeles**: activar el historial, registrar Super+V en COSMIC y borrar el historial.
 
 **Atenuar** baja el brillo del pad (al 5 % por omisión) sin apagarlo, tras unos minutos sin tocarlo o mientras la ventana activa de la pantalla principal está en pantalla completa; al tocar el pad vuelve. **Con batería** puede pasar a otro modo y volver al anterior al enchufar. La parte superior del launcher muestra la batería y su porcentaje.
 
@@ -158,6 +166,7 @@ idle_dim_minutes = 2
 fullscreen_dim = true         # atenuar con pantalla completa en la principal
 dim_level = 5                 # % del brillo máximo
 battery_mode = ""             # modo al usar batería; "" = no cambiar
+clipboard_history = true      # historial del portapapeles
 ```
 
 El orden del inicio se guarda en `~/.local/state/glasspad/inicio.json`. Al instalar, el inicio trae las utilidades de GlassPad; las apps las agrega cada uno.
@@ -192,6 +201,7 @@ glasspad status          modo, brillo y ciclo actuales
 glasspad next            lo mismo que Fn+F6
 glasspad mode dark       launcher, monitor, dark u off
 glasspad brightness 180  brillo de los modos encendidos (1-255)
+glasspad clipboard       muestra el historial del portapapeles (lo que hace Super+V)
 ```
 
 ## Otros problemas que tuve

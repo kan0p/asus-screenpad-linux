@@ -2,7 +2,7 @@
 # glasspad-config - GlassPad Configurator, en la pantalla principal
 # kan0p - https://github.com/kan0p/asus-screenpad-linux - GPL-3.0-or-later
 
-import os, sys, tomllib
+import os, re, sys, tomllib
 
 import gi
 gi.require_version("Gtk", "4.0")
@@ -31,7 +31,13 @@ PREDETERMINADA = {
     "fullscreen_dim": True,
     "dim_level": 5,
     "battery_mode": "",
+    "clipboard_history": True,
 }
+
+ATAJOS_COSMIC = os.path.join(XDG_CONFIG, "cosmic", "com.system76.CosmicSettings.Shortcuts",
+                             "v1", "custom")
+ENTRADA_SUPER_V = '    (modifiers: [Super], key: "v"): Spawn("glasspad clipboard"),\n'
+
 
 MODOS = [("launcher", "Launcher"), ("monitor", "Monitor"), ("dark", "Oscuro"), ("off", "Apagado")]
 INICIO_SESION = [("last", "El último usado"), *MODOS]
@@ -141,7 +147,9 @@ class Ventana(Adw.ApplicationWindow):
                  (self._grupo_modos, self._grupo_atenuar, self._grupo_bateria,
                   self._grupo_touchpad)),
                 ("quickkey", "Quick Key", "input-keyboard-symbolic",
-                 (self._grupo_perfil, self._grupo_atajos))):
+                 (self._grupo_perfil, self._grupo_atajos)),
+                ("portapapeles", "Portapapeles", "edit-paste-symbolic",
+                 (self._grupo_portapapeles,))):
             pagina = Adw.PreferencesPage()
             for grupo in grupos:
                 pagina.add(grupo())
@@ -285,6 +293,79 @@ class Ventana(Adw.ApplicationWindow):
         g.add(self._combo("Al usar batería, pasar a", "al enchufar vuelve al modo anterior",
                           "battery_mode", MODO_BATERIA))
         return g
+
+    # ----- portapapeles -------------------------------------------------------
+
+    def _grupo_portapapeles(self):
+        g = Adw.PreferencesGroup(
+            title="Historial",
+            description="Lo copiado se guarda solo en memoria, hasta 25 textos; lo anclado se "
+                        "guarda en disco. Se ignora lo que los gestores de contraseñas marcan "
+                        "como secreto.")
+        g.add(self._interruptor("Guardar el historial", None, "clipboard_history"))
+        self.fila_super_v = Adw.ActionRow(title="Abrir con Super+V")
+        self.boton_super_v = Gtk.Button(valign=Gtk.Align.CENTER)
+        self.boton_super_v.connect("clicked", self._alternar_super_v)
+        self.fila_super_v.add_suffix(self.boton_super_v)
+        g.add(self.fila_super_v)
+        borrar = Adw.ButtonRow(title="Borrar el historial", start_icon_name="user-trash-symbolic")
+        borrar.connect("activated", lambda _f: self._borrar_historial())
+        g.add(borrar)
+        self._mostrar_super_v()
+        return g
+
+    @staticmethod
+    def _leer_atajos_cosmic():
+        try:
+            with open(ATAJOS_COSMIC) as f:
+                return f.read()
+        except OSError:
+            return ""
+
+    def _mostrar_super_v(self):
+        texto = self._leer_atajos_cosmic()
+        if 'Spawn("glasspad clipboard")' in texto:
+            self.fila_super_v.set_subtitle("Configurado en los atajos de COSMIC")
+            self.boton_super_v.set_label("Quitar")
+            self.boton_super_v.remove_css_class("suggested-action")
+        else:
+            self.fila_super_v.set_subtitle("Agrega el atajo a COSMIC")
+            self.boton_super_v.set_label("Configurar")
+            self.boton_super_v.add_css_class("suggested-action")
+
+    def _alternar_super_v(self, _b):
+        texto = self._leer_atajos_cosmic()
+        if 'Spawn("glasspad clipboard")' in texto:
+            lineas = [l for l in texto.splitlines(keepends=True)
+                      if 'Spawn("glasspad clipboard")' not in l]
+            nuevo = "".join(lineas)
+        elif re.search(r'modifiers:\s*\[\s*Super\s*,?\s*\],\s*key:\s*"v"', texto):
+            self.fila_super_v.set_subtitle("Super+V ya tiene otro atajo en COSMIC; quítalo primero")
+            return
+        elif texto.strip().endswith("}"):
+            cuerpo = texto.rstrip()[:-1].rstrip()
+            separador = "" if cuerpo.endswith(",") or cuerpo.endswith("{") else ","
+            nuevo = f"{cuerpo}{separador}\n{ENTRADA_SUPER_V}}}\n"
+        else:
+            nuevo = "{\n" + ENTRADA_SUPER_V + "}\n"
+        try:
+            os.makedirs(os.path.dirname(ATAJOS_COSMIC), exist_ok=True)
+            tmp = ATAJOS_COSMIC + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(nuevo)
+            os.replace(tmp, ATAJOS_COSMIC)
+        except OSError as e:
+            self.fila_super_v.set_subtitle(f"No se pudo guardar: {e.strerror}")
+            return
+        self._mostrar_super_v()
+
+    def _borrar_historial(self):
+        try:
+            Gio.bus_get_sync(Gio.BusType.SESSION).call_sync(
+                "io.github.kan0p.GlassPad", "/io/github/kan0p/GlassPad", "io.github.kan0p.GlassPad",
+                "ClipboardClear", None, None, Gio.DBusCallFlags.NONE, 1000, None)
+        except GLib.Error as e:
+            print(f"glasspad-config: {e.message}", file=sys.stderr)
 
     # ----- Quick Key ---------------------------------------------------------
 

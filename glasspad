@@ -4,7 +4,8 @@
 """uso: glasspad status
        glasspad next
        glasspad mode launcher|monitor|dark|off
-       glasspad brightness 1-255"""
+       glasspad brightness 1-255
+       glasspad clipboard"""
 
 import sys
 
@@ -37,6 +38,8 @@ def main(args):
         elif cmd == "brightness" and len(args) == 2 and args[1].isdigit():
             p.call_sync("SetBrightness", GLib.Variant("(u)", (int(args[1]),)),
                         Gio.DBusCallFlags.NONE, 2000, None)
+        elif cmd == "clipboard":
+            p.call_sync("ShowClipboard", None, Gio.DBusCallFlags.NONE, 2000, None)
         else:
             sys.exit(__doc__)
     except GLib.Error as e:
