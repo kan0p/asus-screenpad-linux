@@ -1,0 +1,25 @@
+pkgbase = glasspad
+	pkgdesc = ScreenPad de la ASUS ZenBook Pro 15 UX580 con NVIDIA: encendido, modos con Fn+F6 y launcher táctil
+	pkgver = 0.9.0
+	pkgrel = 1
+	url = https://github.com/kan0p/asus-screenpad-linux
+	install = glasspad.install
+	arch = any
+	license = GPL-3.0-or-later
+	depends = python
+	depends = python-evdev
+	depends = python-gobject
+	depends = gtk4
+	depends = gtk4-layer-shell
+	depends = libadwaita
+	depends = acpi_call
+	depends = NVIDIA-MODULE
+	depends = sudo
+	depends = wtype
+	depends = playerctl
+	depends = wireplumber
+	backup = etc/sudoers.d/glasspad
+	source = glasspad-0.9.0.tar.gz::https://github.com/kan0p/asus-screenpad-linux/archive/refs/tags/v0.9.0.tar.gz
+	sha256sums = SKIP
+
+pkgname = glasspad
