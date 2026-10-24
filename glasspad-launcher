@@ -23,8 +23,9 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 gi.require_version("Gsk", "4.0")
 gi.require_version("Graphene", "1.0")
+gi.require_version("GdkPixbuf", "2.0")
 gi.require_version("Gtk4LayerShell", "1.0")
-from gi.repository import Gdk, Gio, GLib, Graphene, Gsk, Gtk
+from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Graphene, Gsk, Gtk
 from gi.repository import Gtk4LayerShell as Capa
 try:
     gi.require_version("GioUnix", "2.0")
@@ -492,6 +493,20 @@ def leer_perfiles():
         return {"general": {"nombre": "Generales", "atajos": []}}
 
 
+def textura_difuminada(ruta, blur, ancho=1920, alto=1080):
+    """Difuminado aproximado (se reduce 'blur' veces y se agranda con interpolación suave),
+    para cuando la ventana todavía no tiene renderer."""
+    if blur <= 0:
+        return Gdk.Texture.new_from_filename(ruta)
+    factor = max(2, blur)
+    chica = GdkPixbuf.Pixbuf.new_from_file_at_scale(ruta, max(8, ancho // factor),
+                                                    max(8, alto // factor), True)
+    w, h = chica.get_width() * factor, chica.get_height() * factor
+    grande = chica.scale_simple(w, h, GdkPixbuf.InterpType.HYPER)
+    formato = Gdk.MemoryFormat.R8G8B8A8 if grande.get_has_alpha() else Gdk.MemoryFormat.R8G8B8
+    return Gdk.MemoryTexture.new(w, h, formato, grande.read_pixel_bytes(), grande.get_rowstride())
+
+
 def guardar_inicio(ids, ofrecidas=None):
     if ofrecidas is None:
         try:
@@ -795,19 +810,24 @@ class Estela(Gtk.Widget):
         return True
 
     def do_snapshot(self, snap):
+        # círculos con recorte redondeado y color: sin texturas en la caché de GSK
         ahora = time.monotonic()
+        c = Gdk.RGBA()
+        c.red = c.green = c.blue = 1.0
         for puntos in self.trazos.values():
             for (x0, y0, _), (x1, y1, t) in zip([puntos[0], *puntos], puntos):
                 vida = max(0.0, 1 - (ahora - t) / ESTELA_S)
-                b = Gsk.PathBuilder.new()
-                b.move_to(x0, y0)
-                b.line_to(x1, y1)
-                trazo = Gsk.Stroke.new(4 + 10 * vida)
-                trazo.set_line_cap(Gsk.LineCap.ROUND)
-                c = Gdk.RGBA()
-                c.red = c.green = c.blue = 1.0
+                r = 2 + 5 * vida
                 c.alpha = 0.55 * vida
-                snap.append_stroke(b.to_path(), trazo, c)
+                pasos = max(1, int(math.hypot(x1 - x0, y1 - y0) / max(2.0, r)))
+                for i in range(1, pasos + 1):
+                    x, y = x0 + (x1 - x0) * i / pasos, y0 + (y1 - y0) * i / pasos
+                    rect = Graphene.Rect().init(x - r, y - r, 2 * r, 2 * r)
+                    redondo = Gsk.RoundedRect()
+                    redondo.init_from_rect(rect, r)
+                    snap.push_rounded_clip(redondo)
+                    snap.append_color(c, rect)
+                    snap.pop()
 
 
 class Wayland:
@@ -1231,7 +1251,7 @@ class Anillo(Gtk.Widget):
 
 
 class Grafico(Gtk.Widget):
-    """Últimos 60 valores (0..1) como área con línea."""
+    """Últimos 60 valores (0..1) como columnas."""
 
     def __init__(self):
         super().__init__(vexpand=True, can_target=False)
@@ -1245,31 +1265,21 @@ class Grafico(Gtk.Widget):
         self.queue_draw()
 
     def do_snapshot(self, snap):
-        if len(self.valores) < 2:
+        # columnas de rectángulos de color: sin texturas en la caché de GSK
+        if not self.valores:
             return
         w, h = self.get_width(), self.get_height()
-        paso = w / 59
-        x0 = w - paso * (len(self.valores) - 1)
-        puntos = [(x0 + i * paso, h - 4 - v * (h - 8)) for i, v in enumerate(self.valores)]
-        area = Gsk.PathBuilder.new()
-        area.move_to(puntos[0][0], h)
-        for p in puntos:
-            area.line_to(*p)
-        area.line_to(puntos[-1][0], h)
-        area.close()
-        relleno = Gdk.RGBA()
+        paso = w / 60
+        ancho = max(1.0, paso - 2)
+        relleno, tope = Gdk.RGBA(), Gdk.RGBA()
         relleno.parse("rgba(77,155,255,0.25)")
-        snap.append_fill(area.to_path(), Gsk.FillRule.WINDING, relleno)
-        linea = Gsk.PathBuilder.new()
-        linea.move_to(*puntos[0])
-        for p in puntos[1:]:
-            linea.line_to(*p)
-        color = Gdk.RGBA()
-        color.parse("#4d9bff")
-        trazo = Gsk.Stroke.new(3)
-        trazo.set_line_join(Gsk.LineJoin.ROUND)
-        snap.append_stroke(linea.to_path(), trazo, color)
-
+        tope.parse("#4d9bff")
+        x0 = w - paso * len(self.valores)
+        for i, v in enumerate(self.valores):
+            alto = max(3.0, v * (h - 4))
+            x = x0 + i * paso
+            snap.append_color(relleno, Graphene.Rect().init(x, h - alto, ancho, alto))
+            snap.append_color(tope, Graphene.Rect().init(x, h - alto, ancho, 3))
 
 class Medidor:
     """Mide CPU, memoria, GPU, batería, red y disco una vez por segundo mientras está activo."""
@@ -1492,7 +1502,8 @@ class Launcher(Gtk.Application):
         self.acciones = {}          # nombre del widget -> (al tocar, al mantener)
         self.n_acciones = 0
         self.n_paginas = 0
-        self.fondos = []            # (Gtk.Stack, Gtk.Picture) de cada fondo
+        self.fondos = []            # (Gtk.Stack, Gtk.Picture, difuminado) de cada fondo
+        self.cache_fondo = None
         self.mosaico_id = {}        # nombre del mosaico del inicio -> id de la app
         self.deslizables = {}       # nombre del widget -> (widget, al_cambiar(fracción))
         self.brillo = 255
@@ -1624,6 +1635,7 @@ class Launcher(Gtk.Application):
         self.ventana = v
         self._aplicar_fondo()
         self._achicar(True)
+        v.connect("realize", lambda _v: GLib.idle_add(lambda: self._aplicar_fondo() and False))
         v.present()
         self._musica_cambio()
 
@@ -3542,11 +3554,9 @@ class Launcher(Gtk.Application):
         fondo = Gtk.Stack(can_target=False)
         fondo.add_named(Gtk.Box(css_classes=["fondo-predeterminado"]), "default")
         fondo.add_named(Gtk.Box(css_classes=["fondo-color"]), "color")
-        imagen = Gtk.Picture(content_fit=Gtk.ContentFit.COVER,
-                             css_classes=["fondo-imagen", "difuminado"] if difuminado
-                             else ["fondo-imagen"])
+        imagen = Gtk.Picture(content_fit=Gtk.ContentFit.COVER, css_classes=["fondo-imagen"])
         fondo.add_named(imagen, "image")
-        self.fondos.append((fondo, imagen))
+        self.fondos.append((fondo, imagen, difuminado))
         return fondo
 
     def _aplicar_fondo(self):
@@ -3560,9 +3570,7 @@ class Launcher(Gtk.Application):
             atenuar = max(0, min(80, int(c["background_dim"]))) / 100
         except (TypeError, ValueError):
             atenuar = 0
-        # la imagen difuminada se agranda un poco para que el blur no deje bordes claros
         css = (f".fondo-color, .fondo-imagen {{ background: {fondo}; }}\n"
-               f".difuminado {{ filter: blur({blur}px); transform: scale(1.06); }}\n"
                f".atenuar {{ background: alpha(black, {atenuar}); }}\n")
         self.css_fondo.load_from_data(css.encode())
         ruta = os.path.expanduser(str(c["background"]))
@@ -3571,12 +3579,52 @@ class Launcher(Gtk.Application):
             modo = "default"
         if modo not in ("default", "color", "image"):
             modo = "default"
-        for pila, imagen in self.fondos:
-            if modo == "image":
-                imagen.set_filename(ruta)
-            else:
-                imagen.set_paintable(None)
+        texturas = self._texturas_fondo(ruta, blur) if modo == "image" else None
+        if modo == "image" and texturas is None:
+            modo = "default"
+        for pila, imagen, difuminado in self.fondos:
+            imagen.set_paintable(texturas[difuminado] if texturas else None)
             pila.set_visible_child_name(modo)
+
+    def _texturas_fondo(self, ruta, blur):
+        """(nítida, difuminada) de la imagen de fondo, calculadas una vez por imagen y blur."""
+        try:
+            clave = (ruta, os.path.getmtime(ruta), blur)
+            if self.cache_fondo and self.cache_fondo[0] == clave:
+                return self.cache_fondo[1]
+            nitida = Gdk.Texture.new_from_filename(ruta)
+        except (OSError, GLib.Error) as e:
+            log(f"fondo: no se pudo cargar {ruta}: {e}")
+            return None
+        difuminada = self._difuminar(nitida, blur)
+        if difuminada is None:
+            # sin renderer todavía: versión provisional, sin guardar en la caché
+            return (nitida, textura_difuminada(ruta, blur))
+        texturas = (nitida, difuminada)
+        self.cache_fondo = (clave, texturas)
+        return texturas
+
+    def _difuminar(self, textura, blur, ancho=1920, alto=1080):
+        """Difuminado de GSK renderizado una vez a una textura del tamaño del pad, cubriéndolo
+        como ContentFit.COVER; el margen evita que el borde se aclare."""
+        if blur <= 0:
+            return textura
+        renderer = self.ventana.get_renderer() if self.ventana else None
+        if renderer is None:
+            return None
+        escala = max(ancho / textura.get_width(), alto / textura.get_height())
+        w, h = textura.get_width() * escala, textura.get_height() * escala
+        margen = blur * 3
+        destino = Graphene.Rect().init((ancho - w) / 2 - margen, (alto - h) / 2 - margen,
+                                       w + 2 * margen, h + 2 * margen)
+        snap = Gtk.Snapshot()
+        snap.push_blur(blur)
+        snap.append_texture(textura, destino)
+        snap.pop()
+        nodo = snap.to_node()
+        if nodo is None:
+            return None
+        return renderer.render_texture(nodo, Graphene.Rect().init(0, 0, ancho, alto))
 
     def _entrar_touchpad(self):
         debug("touchpad temporal")
