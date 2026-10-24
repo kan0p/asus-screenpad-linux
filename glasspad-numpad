@@ -7,7 +7,7 @@
 #
 # uso: glasspad-numpad [RUTA_SOCKET]   (sin argumento, el socket lo pasa systemd)
 
-import glob, os, selectors, socket, sys, time
+import ctypes, glob, os, selectors, socket, struct, sys, time
 
 from evdev import UInput, ecodes as e
 
@@ -92,6 +92,24 @@ class Teclado:
         self.estado = (encendido, time.monotonic())
 
 
+_libsystemd = ctypes.CDLL("libsystemd.so.0")
+_libsystemd.sd_uid_get_state.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)]
+_libc = ctypes.CDLL(None)
+
+
+def sesion_activa(cliente):
+    """El usuario al otro lado del socket tiene una sesión en primer plano (logind)."""
+    _, uid, _ = struct.unpack("3i", cliente.getsockopt(
+        socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))
+    estado = ctypes.c_void_p()
+    if _libsystemd.sd_uid_get_state(uid, ctypes.byref(estado)) < 0:
+        return False
+    try:
+        return ctypes.string_at(estado) == b"active"
+    finally:
+        _libc.free(estado)
+
+
 def socket_de_escucha():
     if len(sys.argv) > 1:
         ruta = sys.argv[1]
@@ -120,6 +138,9 @@ def main():
             s = clave.fileobj
             if s is escucha:
                 cliente, _ = escucha.accept()
+                if not sesion_activa(cliente):
+                    cliente.close()
+                    continue
                 cliente.setblocking(False)
                 sel.register(cliente, selectors.EVENT_READ)
                 pendientes[cliente] = b""

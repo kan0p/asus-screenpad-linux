@@ -24,7 +24,7 @@ rm -f /etc/systemd/system/screenpad.service /etc/systemd/system/glasspad-numpad.
       /etc/systemd/system/screenpad-numpad.socket /etc/systemd/user/screenpadd.service \
       /etc/systemd/user/screenpad-launcher.service
 rm -f /etc/modules-load.d/screenpad.conf /etc/modules-load.d/glasspad.conf \
-      /etc/sysusers.d/glasspad.conf \
+      /etc/sysusers.d/glasspad.conf /usr/share/polkit-1/actions/io.github.kan0p.glasspad.policy \
       /etc/udev/rules.d/70-glasspad.rules /etc/udev/hwdb.d/70-glasspad.hwdb \
       /etc/udev/rules.d/70-screenpad.rules /etc/udev/hwdb.d/70-screenpad.hwdb \
       /etc/sudoers.d/glasspad /etc/sudoers.d/screenpad \

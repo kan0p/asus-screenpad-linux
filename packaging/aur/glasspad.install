@@ -1,12 +1,5 @@
 post_install() {
-    cat <<'MSG'
-==> Para activar GlassPad:
-    sudo usermod -aG glasspad $USER
-    sudo systemctl enable screenpad.service glasspad-numpad.socket
-    systemctl --user enable glasspadd.service glasspad-launcher.service
-==> Reinicia el equipo: el panel se enciende antes del compositor y el grupo
-    glasspad tiene efecto en la nueva sesión.
-MSG
+    echo "==> Reinicia el equipo para activar GlassPad (el panel se enciende antes del compositor)."
 }
 
 post_upgrade() {
@@ -14,6 +7,6 @@ post_upgrade() {
 }
 
 pre_remove() {
-    systemctl disable --now screenpad.service glasspad-numpad.socket glasspad-numpad.service \
+    systemctl stop screenpad.service glasspad-numpad.socket glasspad-numpad.service \
         > /dev/null 2>&1 || true
 }

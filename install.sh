@@ -20,7 +20,6 @@ if [ $PAQUETE = 1 ]; then
     LIBDIR=$PREFIX/lib
     SYSTEMD=$PREFIX/lib/systemd
     UDEV=$PREFIX/lib/udev
-    SYSUSERS=$PREFIX/lib/sysusers.d
     MODULOS=$PREFIX/lib/modules-load.d
 else
     [ "$(id -u)" = 0 ] || { echo "ejecuta como root: sudo ./install.sh" >&2; exit 1; }
@@ -33,10 +32,11 @@ else
     LIBDIR=$PREFIX/lib
     SYSTEMD=/etc/systemd
     UDEV=/etc/udev
-    SYSUSERS=/etc/sysusers.d
     MODULOS=/etc/modules-load.d
 fi
 SHARE=$PREFIX/share
+# polkit solo lee acciones de /usr/share
+POLKIT=/usr/share/polkit-1/actions
 
 # ----- dependencias (solo instalación manual) -----------------------------------------
 
@@ -53,23 +53,24 @@ revisar_dependencias() {
     command -v wtype > /dev/null || falta wtype
     python3 -c 'import gi; gi.require_version("Playerctl", "2.0")' 2>/dev/null || falta playerctl
     command -v wpctl > /dev/null || falta wpctl
+    command -v pkexec > /dev/null || falta pkexec
     [ -s "$FALTAN" ] || { rm -f "$FALTAN"; return 0; }
 
     if command -v pacman > /dev/null; then
         GESTOR="pacman -S --needed"
         nombres="gobject:python-gobject evdev:python-evdev gtk4:gtk4 adwaita:libadwaita
                  layershell:gtk4-layer-shell acpi_call:acpi_call-dkms wtype:wtype
-                 playerctl:playerctl wpctl:wireplumber"
+                 playerctl:playerctl wpctl:wireplumber pkexec:polkit"
     elif command -v apt-get > /dev/null; then
         GESTOR="apt-get install"
         nombres="gobject:python3-gi evdev:python3-evdev gtk4:gir1.2-gtk-4.0 adwaita:gir1.2-adw-1
                  layershell:gir1.2-gtk4layershell-1.0 acpi_call:acpi-call-dkms wtype:wtype
-                 playerctl:gir1.2-playerctl-2.0 wpctl:wireplumber"
+                 playerctl:gir1.2-playerctl-2.0 wpctl:wireplumber pkexec:pkexec"
     elif command -v dnf > /dev/null; then
         GESTOR="dnf install"
         nombres="gobject:python3-gobject evdev:python3-evdev gtk4:gtk4 adwaita:libadwaita
                  layershell:gtk4-layer-shell acpi_call:akmod-acpi_call wtype:wtype
-                 playerctl:playerctl wpctl:wireplumber"
+                 playerctl:playerctl wpctl:wireplumber pkexec:polkit"
     else
         echo "faltan dependencias: $(tr '\n' ' ' < "$FALTAN")" >&2
         echo "no reconozco el gestor de paquetes: instálalas a mano (ver README)" >&2
@@ -108,6 +109,10 @@ limpiar_nombres_viejos() {
           /etc/udev/rules.d/70-screenpad.rules /etc/udev/hwdb.d/70-screenpad.hwdb \
           /etc/sudoers.d/screenpad /usr/local/share/applications/io.github.kan0p.ScreenPad.Config.desktop
     rm -rf /usr/local/share/screenpad
+    # permisos anteriores a polkit
+    rm -f /etc/sudoers.d/glasspad /etc/sysusers.d/glasspad.conf
+    getent group glasspad > /dev/null && groupdel glasspad
+    true
 }
 
 # ----- copia de archivos ----------------------------------------------------------------
@@ -143,28 +148,31 @@ EOF
     for f in glasspadd.service glasspad-launcher.service; do
         con_rutas "systemd/$f" | install -Dm644 /dev/stdin "$D$SYSTEMD/user/$f"
     done
-    install -Dm644 systemd/glasspad.sysusers "$D$SYSUSERS/glasspad.conf"
     printf 'acpi_call\ni2c-dev\n' | install -Dm644 /dev/stdin "$D$MODULOS/screenpad.conf"
     printf 'uinput\n' | install -Dm644 /dev/stdin "$D$MODULOS/glasspad.conf"
 
     install -Dm644 udev/70-glasspad.rules "$D$UDEV/rules.d/70-glasspad.rules"
     install -Dm644 udev/70-glasspad.hwdb "$D$UDEV/hwdb.d/70-glasspad.hwdb"
-    install -d -m750 "$D/etc/sudoers.d"
-    con_rutas sudoers/glasspad | install -Dm440 /dev/stdin "$D/etc/sudoers.d/glasspad"
+    con_rutas polkit/io.github.kan0p.glasspad.policy \
+        | install -Dm644 /dev/stdin "$D$POLKIT/io.github.kan0p.glasspad.policy"
+}
+
+# habilitados en el paquete: el sistema al arrancar y la sesión de cada usuario
+habilitar_en_paquete() {
+    D=$DESTDIR$SYSTEMD
+    install -d "$D/system/multi-user.target.wants" "$D/system/sockets.target.wants" \
+        "$D/user/graphical-session.target.wants"
+    ln -sf ../screenpad.service "$D/system/multi-user.target.wants/screenpad.service"
+    ln -sf ../glasspad-numpad.service "$D/system/multi-user.target.wants/glasspad-numpad.service"
+    ln -sf ../glasspad-numpad.socket "$D/system/sockets.target.wants/glasspad-numpad.socket"
+    for f in glasspadd.service glasspad-launcher.service; do
+        ln -sf "../$f" "$D/user/graphical-session.target.wants/$f"
+    done
 }
 
 # ----- instalación manual: permisos, servicios y arranque -------------------------------
 
 activar() {
-    systemd-sysusers "$SYSUSERS/glasspad.conf"
-    usermod -aG glasspad "$USUARIO"
-    # la línea del usuario y SocketUser funcionan sin volver a iniciar sesión
-    printf '%s ALL=(root) NOPASSWD: GLASSPAD_SCREENPAD\n' "$USUARIO" >> /etc/sudoers.d/glasspad
-    visudo -cqf /etc/sudoers.d/glasspad || {
-        rm -f /etc/sudoers.d/glasspad; echo "la regla sudoers no es válida, no se instaló" >&2; exit 1; }
-    sed -i "s|^SocketGroup=glasspad$|SocketUser=$USUARIO\nSocketGroup=glasspad|" \
-        "$SYSTEMD/system/glasspad-numpad.socket"
-
     modprobe uinput 2>/dev/null || true
     systemd-hwdb update 2>/dev/null || udevadm hwdb --update
     udevadm control --reload
@@ -188,6 +196,7 @@ activar() {
 
 if [ $PAQUETE = 1 ]; then
     copiar
+    habilitar_en_paquete
 else
     revisar_dependencias
     limpiar_nombres_viejos

@@ -30,8 +30,9 @@ RUTA = "/io/github/kan0p/GlassPad"
 BUS_LAUNCHER = "io.github.kan0p.GlassPad.Launcher"
 SCREENPAD = os.environ.get("SCREENPAD_BIN") or os.path.join(
     os.path.dirname(os.path.realpath(__file__)), "screenpad")
-# Para pruebas sin hardware: SCREENPAD_BIN=un-falso SCREENPAD_SIN_SUDO=1
-SUDO = [] if os.environ.get("SCREENPAD_SIN_SUDO") else ["sudo", "-n"]
+# Para pruebas sin hardware: SCREENPAD_BIN=un-falso SCREENPAD_SIN_PKEXEC=1
+# pkexec: la acción de polkit lo permite sin contraseña a la sesión activa
+PKEXEC = [] if os.environ.get("SCREENPAD_SIN_PKEXEC") else ["pkexec", "--disable-internal-agent"]
 
 XDG_CONFIG = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
 XDG_STATE = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
@@ -708,7 +709,7 @@ class Servicio:
 
     def _firmware(self, args, deseado, al_terminar):
         self.ocupado = True
-        cmd = [*SUDO, SCREENPAD, *args]
+        cmd = [*PKEXEC, SCREENPAD, *args]
         debug("ejecuta:", " ".join(cmd))
         try:
             p = Gio.Subprocess.new(cmd, Gio.SubprocessFlags.STDOUT_PIPE
@@ -777,7 +778,7 @@ class Servicio:
 
     def _leer(self, args, cb):
         try:
-            p = Gio.Subprocess.new([*SUDO, SCREENPAD, *args],
+            p = Gio.Subprocess.new([*PKEXEC, SCREENPAD, *args],
                                    Gio.SubprocessFlags.STDOUT_PIPE
                                    | Gio.SubprocessFlags.STDERR_MERGE)
         except GLib.Error as e:

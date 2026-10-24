@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- screenpad sin contraseña solo para la sesión local activa; screenpad limita las órdenes -->
+<policyconfig>
+  <vendor>GlassPad</vendor>
+  <vendor_url>https://github.com/kan0p/asus-screenpad-linux</vendor_url>
+  <action id="io.github.kan0p.glasspad.screenpad">
+    <description>Encender, apagar y ajustar el brillo del ScreenPad</description>
+    <message>GlassPad necesita controlar el ScreenPad</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">@BINDIR@/screenpad</annotate>
+  </action>
+</policyconfig>

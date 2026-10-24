@@ -48,7 +48,7 @@ cd asus-screenpad-linux
 sudo ./install.sh
 ```
 
-El instalador revisa las dependencias y, si falta alguna, ofrece instalarla con pacman, apt o dnf (`--si` las instala sin preguntar). Para empaquetar, `./install.sh --paquete DESTDIR` copia todo en `DESTDIR` con prefijo `/usr`, sin tocar el sistema; el grupo `glasspad` se crea con `sysusers.d`.
+El instalador revisa las dependencias y, si falta alguna, ofrece instalarla con pacman, apt o dnf (`--si` las instala sin preguntar). Para empaquetar, `./install.sh --paquete DESTDIR` copia todo en `DESTDIR` con prefijo `/usr`, sin tocar el sistema, y deja los servicios ya habilitados.
 
 Falta acomodar la pantalla. El panel es vertical, así que hay que rotarlo 270° y ponerlo debajo de la pantalla principal. Yo lo hago así en COSMIC:
 
@@ -91,7 +91,9 @@ Con `startup_mode = "off"` y `off_blocks_pad = false`, el panel arranca apagado 
 `install.sh` agrega dos permisos para que esto funcione sin contraseña:
 
 - una regla udev (`udev/70-glasspad.rules`) que da a la sesión acceso de lectura **solo** a las teclas ASUS y al touchpad del pad, no al teclado;
-- una regla sudoers (`sudoers/glasspad`) que permite `screenpad on|replug|off|status|brightness` sin contraseña. `dump-edid` queda fuera, porque escribe archivos como root.
+- una acción de polkit (`polkit/io.github.kan0p.glasspad.policy`) que permite a la sesión local activa ejecutar `pkexec screenpad on|replug|off|status|brightness` sin contraseña. `dump-edid` queda fuera, porque escribe archivos como root.
+
+El socket de Number Key acepta conexiones de cualquier usuario, pero `glasspad-numpad` cierra las que no vienen de una sesión activa.
 
 El brillo se maneja por WMI y no por `/sys/class/backlight`. En 0 apaga solo la retroiluminación: la salida sigue conectada y el touchpad sigue funcionando.
 
@@ -237,8 +239,8 @@ glasspad clipboard       muestra el historial del portapapeles (lo que hace Supe
 - `glasspad-numpad`: teclado numérico virtual de Number Key (root, `python-evdev`)
 - `icons/`: mosaicos e íconos de interfaz del launcher
 - `atajos.toml`: perfiles de Quick Key por tipo de app
-- `systemd/`: `screenpad.service` y `glasspad-numpad.socket`/`.service` (sistema), `glasspadd.service` y `glasspad-launcher.service` (sesión), `glasspad.sysusers` (grupo `glasspad`)
-- `udev/`, `sudoers/`: permisos y el cambio de Fn+F6 a `KEY_MACRO1`
+- `systemd/`: `screenpad.service` y `glasspad-numpad.socket`/`.service` (sistema), `glasspadd.service` y `glasspad-launcher.service` (sesión)
+- `udev/`, `polkit/`: permisos y el cambio de Fn+F6 a `KEY_MACRO1`
 - `install.sh`, `uninstall.sh`
 - `edid/ux580-tsb-original.bin`: el EDID tal como sale del puente, con el checksum malo
 - `edid/ux580-tsb-fixed.bin`: el mismo, corregido

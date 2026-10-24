@@ -7,8 +7,7 @@ arch=('any')
 url="https://github.com/kan0p/asus-screenpad-linux"
 license=('GPL-3.0-or-later')
 depends=('python' 'python-evdev' 'python-gobject' 'gtk4' 'gtk4-layer-shell' 'libadwaita'
-         'acpi_call' 'NVIDIA-MODULE' 'sudo' 'wtype' 'playerctl' 'wireplumber')
-backup=('etc/sudoers.d/glasspad')
+         'acpi_call' 'NVIDIA-MODULE' 'polkit' 'wtype' 'playerctl' 'wireplumber')
 install=glasspad.install
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')

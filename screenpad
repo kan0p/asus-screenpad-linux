@@ -23,6 +23,14 @@ die() { echo "screenpad: error: $*" >&2; exit 1; }
 
 [ "$(id -u)" = 0 ] || die "debe ejecutarse como root"
 
+# polkit autoriza el ejecutable completo: por pkexec solo las órdenes del servicio
+if [ -n "${PKEXEC_UID:-}" ]; then
+    case ${1:-on} in
+        on|off|replug|status|brightness) ;;
+        *) die "orden no permitida por pkexec: $1" ;;
+    esac
+fi
+
 # energía del panel: DEVS/DSTS de ASUS WMI vía acpi_call
 
 acpi() {
