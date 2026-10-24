@@ -22,7 +22,20 @@ PREDETERMINADA = {
     "background_blur": 12,
     "background_dim": 0,
     "touchpad_return": 4,
+    "cycle": ["launcher", "monitor", "dark", "off"],
+    "startup_mode": "last",
+    "off_blocks_pad": True,
+    "isolate_pointer": True,
+    "idle_dim": True,
+    "idle_dim_minutes": 2,
+    "fullscreen_dim": True,
+    "dim_level": 5,
+    "battery_mode": "",
 }
+
+MODOS = [("launcher", "Launcher"), ("monitor", "Monitor"), ("dark", "Oscuro"), ("off", "Apagado")]
+INICIO_SESION = [("last", "El último usado"), *MODOS]
+MODO_BATERIA = [("", "No cambiar"), *MODOS]
 
 
 # los mismos atajos por omisión que glasspad-launcher: [texto, ícono, combinación]
@@ -104,19 +117,28 @@ def guardar(conf):
 
 class Ventana(Adw.ApplicationWindow):
     def __init__(self, app):
-        super().__init__(application=app, title="GlassPad Configurator", default_width=560,
-                         default_height=720)
+        super().__init__(application=app, title="GlassPad Configurator", default_width=640,
+                         default_height=760)
         self.conf = leer()
         self.listo = False
 
-        pagina = Adw.PreferencesPage()
-        pagina.add(self._grupo_fondo())
-        pagina.add(self._grupo_touchpad())
-        pagina.add(self._grupo_atajos())
+        pestanas = Adw.ViewStack()
+        for nombre, titulo, icono, grupos in (
+                ("apariencia", "Apariencia", "preferences-desktop-wallpaper-symbolic",
+                 (self._grupo_fondo,)),
+                ("screenpad", "ScreenPad", "input-touchpad-symbolic",
+                 (self._grupo_modos, self._grupo_atenuar, self._grupo_bateria,
+                  self._grupo_touchpad)),
+                ("quickkey", "Quick Key", "input-keyboard-symbolic", (self._grupo_atajos,))):
+            pagina = Adw.PreferencesPage()
+            for grupo in grupos:
+                pagina.add(grupo())
+            pestanas.add_titled_with_icon(pagina, nombre, titulo, icono)
+        cabecera = Adw.HeaderBar(title_widget=Adw.ViewSwitcher(
+            stack=pestanas, policy=Adw.ViewSwitcherPolicy.WIDE))
 
-        vista = Adw.ToolbarView()
-        vista.add_top_bar(Adw.HeaderBar())
-        vista.set_content(pagina)
+        vista = Adw.ToolbarView(content=pestanas)
+        vista.add_top_bar(cabecera)
         self.set_content(vista)
         self._mostrar_filas()
         self.listo = True
@@ -181,6 +203,75 @@ class Ventana(Adw.ApplicationWindow):
         fila.connect("notify::value",
                      lambda f, _p: self._poner("touchpad_return", int(f.get_value())))
         g.add(fila)
+        return g
+
+    # ----- ScreenPad ---------------------------------------------------------
+
+    def _combo(self, titulo, subtitulo, clave, opciones):
+        fila = Adw.ComboRow(title=titulo, subtitle=subtitulo or "",
+                            model=Gtk.StringList.new([t for _v, t in opciones]))
+        valores = [v for v, _t in opciones]
+        actual = self._valor(clave)
+        fila.set_selected(valores.index(actual) if actual in valores else 0)
+        fila.connect("notify::selected", lambda f, _p: self._poner(clave, valores[f.get_selected()]))
+        return fila
+
+    def _interruptor(self, titulo, subtitulo, clave):
+        fila = Adw.SwitchRow(title=titulo, subtitle=subtitulo, active=bool(self._valor(clave)))
+        fila.connect("notify::active", lambda f, _p: self._poner(clave, f.get_active()))
+        return fila
+
+    def _numero(self, titulo, subtitulo, clave, minimo, maximo, paso=1):
+        fila = Adw.SpinRow.new_with_range(minimo, maximo, paso)
+        fila.set_title(titulo)
+        if subtitulo:
+            fila.set_subtitle(subtitulo)
+        fila.set_value(self._entero(clave))
+        fila.connect("notify::value", lambda f, _p: self._poner(clave, int(f.get_value())))
+        return fila
+
+    def _grupo_modos(self):
+        g = Adw.PreferencesGroup(title="Modos",
+                                 description="Fn+F6 recorre los modos marcados, en este orden.")
+        ciclo = self._valor("cycle")
+        self.filas_ciclo = {}
+        for modo, nombre in MODOS:
+            fila = Adw.SwitchRow(title=nombre, active=modo in ciclo)
+            fila.connect("notify::active", self._cambio_ciclo)
+            self.filas_ciclo[modo] = fila
+            g.add(fila)
+        g.add(self._combo("Al iniciar sesión", None, "startup_mode", INICIO_SESION))
+        g.add(self._interruptor("Bloquear el pad en Apagado", "el touchpad no responde",
+                                "off_blocks_pad"))
+        g.add(self._interruptor("Alejar el cursor del pad",
+                                "en Launcher y Oscuro el cursor no pasa al ScreenPad (COSMIC)",
+                                "isolate_pointer"))
+        return g
+
+    def _cambio_ciclo(self, fila, _p):
+        ciclo = [m for m, _n in MODOS if self.filas_ciclo[m].get_active()]
+        if not ciclo:
+            fila.set_active(True)           # al menos un modo
+            return
+        self._poner("cycle", ciclo)
+
+    def _grupo_atenuar(self):
+        g = Adw.PreferencesGroup(
+            title="Atenuar",
+            description="Baja el brillo sin apagar la pantalla; al tocar el pad vuelve.")
+        g.add(self._interruptor("Por inactividad", "tras unos minutos sin tocar el pad",
+                                "idle_dim"))
+        g.add(self._numero("Minutos sin tocar", None, "idle_dim_minutes", 1, 60))
+        g.add(self._interruptor("Con pantalla completa",
+                                "mientras una ventana de la pantalla principal la use",
+                                "fullscreen_dim"))
+        g.add(self._numero("Nivel de atenuado", "% del brillo máximo", "dim_level", 1, 50))
+        return g
+
+    def _grupo_bateria(self):
+        g = Adw.PreferencesGroup(title="Batería")
+        g.add(self._combo("Al usar batería, pasar a", "al enchufar vuelve al modo anterior",
+                          "battery_mode", MODO_BATERIA))
         return g
 
     # ----- Quick Key ---------------------------------------------------------

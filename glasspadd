@@ -41,6 +41,9 @@ DEBUG = "--debug" in sys.argv
 TECLAS_MODO = (ecodes.KEY_MACRO1, ecodes.KEY_TOUCHPAD_TOGGLE)
 # pausa tras el último cambio de modo antes de tocar el firmware
 ESPERA_MS = 1500
+# modos en los que se atenúa por inactividad o pantalla completa
+MODOS_ATENUABLES = ("launcher", "monitor")
+ACTIVIDAD_S = 1             # como mucho un aviso de actividad por segundo
 # Mínimo entre dos replug seguidos
 ENTRE_REPLUG_S = 10
 # modos en los que el pad va a la esquina inferior derecha de la salida principal
@@ -55,6 +58,8 @@ INTERFAZ = f"""
     <method name="SetMode"><arg name="mode" type="s" direction="in"/></method>
     <method name="NextMode"/>
     <method name="SetBrightness"><arg name="level" type="u" direction="in"/></method>
+    <method name="Activity"/>
+    <method name="SetFullscreen"><arg name="active" type="b" direction="in"/></method>
     <property name="Mode" type="s" access="read"/>
     <property name="Brightness" type="u" access="read"/>
     <property name="Cycle" type="as" access="read"/>
@@ -84,7 +89,12 @@ def leer_config():
             "pad_device": "GDX1515:00 27C6:01F4 Touchpad",
             "startup_mode": "last",
             "off_blocks_pad": True,
-            "isolate_pointer": True}
+            "isolate_pointer": True,
+            "idle_dim": True,
+            "idle_dim_minutes": 2,
+            "fullscreen_dim": True,
+            "dim_level": 5,
+            "battery_mode": ""}
     try:
         with open(CONFIG, "rb") as f:
             conf.update(tomllib.load(f))
@@ -166,6 +176,12 @@ class Servicio:
         self.ocupado = False        # hay una orden al firmware en curso
         self.fallo = None           # (deseado) con el que falló la última orden
         self.espera = 0             # timeout pendiente de reconciliar_pronto
+        self.atenuado = set()       # motivos: "inactividad", "pantalla completa"
+        self.fin_inactividad = 0
+        self.ultima_actividad = 0
+        self.observador = None      # pad sin tomar, para ver actividad en modo monitor
+        self.en_bateria = None
+        self.modo_antes_bateria = None
         self.ultimo_replug = 0      # GLib.get_monotonic_time() del último replug
 
         self.teclas = None
@@ -181,11 +197,28 @@ class Servicio:
         Gio.bus_own_name_on_connection(self.bus, BUS, Gio.BusNameOwnerFlags.NONE, None,
                                        lambda *_: self._sin_nombre())
         self._escuchar_suspension()
+        self._escuchar_bateria()
 
         if self.modo == "launcher" and not self._hay_launcher():
             self.modo = "monitor"
         self._abrir_teclas()
         self._consultar_hardware()
+        self._reiniciar_atenuado()
+        self.monitor_config = Gio.File.new_for_path(CONFIG).monitor_file(
+            Gio.FileMonitorFlags.WATCH_MOVES, None)
+        self.monitor_config.connect("changed", self._config_cambiada)
+
+    def _config_cambiada(self, _m, _f, _otro, evento):
+        if evento not in (Gio.FileMonitorEvent.CHANGES_DONE_HINT, Gio.FileMonitorEvent.CREATED,
+                          Gio.FileMonitorEvent.RENAMED, Gio.FileMonitorEvent.MOVED_IN,
+                          Gio.FileMonitorEvent.DELETED):
+            return
+        self.conf = leer_config()
+        debug("config recargada")
+        self._bloquear_pad(self._deseado()[2])
+        self._ubicar_salida()
+        self._reiniciar_atenuado()
+        self.reconciliar()
 
     # ----- modos ------------------------------------------------------------
 
@@ -211,7 +244,9 @@ class Servicio:
         i = ciclo.index(self.modo) + 1 if self.modo in ciclo else 0
         self.poner_modo(ciclo[i % len(ciclo)])
 
-    def poner_modo(self, modo):
+    def poner_modo(self, modo, manual=True):
+        if manual:
+            self.modo_antes_bateria = None
         if modo not in MODOS:
             raise ValueError(f"modo desconocido: {modo}")
         if modo == "launcher" and not self._hay_launcher():
@@ -223,6 +258,7 @@ class Servicio:
             self.bus.emit_signal(None, RUTA, BUS, "ModeChanged", GLib.Variant("(s)", (modo,)))
         self._avisar(f"ScreenPad: {NOMBRES[modo]}", ICONOS[modo])
         self.fallo = None
+        self._reiniciar_atenuado()
         self.reconciliar_pronto()
 
     def poner_brillo(self, nivel):
@@ -247,7 +283,75 @@ class Servicio:
     def _deseado(self):
         encendido = self.modo != "off"
         brillo = 0 if self.modo == "dark" else self.brillo
+        if self.atenuado and self.modo in MODOS_ATENUABLES:
+            brillo = min(brillo, max(1, round(255 * self._entero("dim_level", 5) / 100)))
         return encendido, brillo, self.modo == "off" and self.conf["off_blocks_pad"]
+
+    def _entero(self, clave, omision):
+        try:
+            return int(self.conf[clave])
+        except (KeyError, TypeError, ValueError):
+            return omision
+
+    # ----- atenuado ----------------------------------------------------------
+
+    def _reiniciar_atenuado(self):
+        """Tras un cambio de modo o de config: sin atenuar y con la cuenta de nuevo."""
+        if self.atenuado:
+            self.atenuado.clear()
+        self._programar_inactividad()
+        self._observar(self.modo == "monitor" and bool(self.conf["idle_dim"]))
+
+    def _programar_inactividad(self):
+        if self.fin_inactividad:
+            GLib.source_remove(self.fin_inactividad)
+            self.fin_inactividad = 0
+        if self.conf["idle_dim"] and self.modo in MODOS_ATENUABLES:
+            minutos = max(1, self._entero("idle_dim_minutes", 2))
+            self.fin_inactividad = GLib.timeout_add_seconds(minutos * 60, self._inactivo)
+
+    def _inactivo(self):
+        self.fin_inactividad = 0
+        debug("atenuado por inactividad")
+        self.atenuado.add("inactividad")
+        self.reconciliar()
+        return False
+
+    def actividad(self):
+        ahora = GLib.get_monotonic_time()
+        if ahora - self.ultima_actividad < ACTIVIDAD_S * 1_000_000 and not self.atenuado:
+            return
+        self.ultima_actividad = ahora
+        self._programar_inactividad()
+        if self.atenuado:
+            debug("actividad: fin del atenuado")
+            self.atenuado.clear()
+            self.reconciliar()
+
+    def pantalla_completa(self, activa):
+        if activa and self.conf["fullscreen_dim"]:
+            debug("atenuado por pantalla completa")
+            self.atenuado.add("pantalla completa")
+        else:
+            self.atenuado.discard("pantalla completa")
+        self.reconciliar()
+
+    def _observar(self, si):
+        if si and self.observador is None:
+            try:
+                dev = buscar_dispositivo(self.conf["pad_device"])
+            except PermissionError:
+                dev = None
+            if dev is None:
+                return
+            self.observador = dev
+
+            def evento(ev):
+                if ev.type == ecodes.EV_KEY and ev.code == ecodes.BTN_TOUCH and ev.value == 1:
+                    self.actividad()
+            self._vigilar(dev, evento)
+        elif not si and self.observador is not None:
+            self._cerrar(self.observador)
 
     def reconciliar_pronto(self):
         # El bloqueo del pad va ya; el firmware espera a que se dejen de pedir cambios.
@@ -459,6 +563,8 @@ class Servicio:
             self.teclas = None
         if dev is self.pad:
             self.pad = None
+        if dev is self.observador:
+            self.observador = None
 
     def _reabrir(self):
         if self.teclas is None:
@@ -529,6 +635,47 @@ class Servicio:
                                  Gio.DBusSignalFlags.NONE, al_dormir)
         self._sistema = sistema
 
+    # ----- batería -----------------------------------------------------------
+
+    def _escuchar_bateria(self):
+        sistema = getattr(self, "_sistema", None)
+        if sistema is None:
+            return
+        try:
+            r = sistema.call_sync("org.freedesktop.UPower", "/org/freedesktop/UPower",
+                                  "org.freedesktop.DBus.Properties", "Get",
+                                  GLib.Variant("(ss)", ("org.freedesktop.UPower", "OnBattery")),
+                                  GLib.VariantType("(v)"), Gio.DBusCallFlags.NONE, 1000, None)
+            self._bateria(r.unpack()[0])
+        except GLib.Error:
+            return
+
+        def cambio(_c, _s, _r, _i, _n, params):
+            interfaz, cambios, _inv = params.unpack()
+            if interfaz == "org.freedesktop.UPower" and "OnBattery" in cambios:
+                self._bateria(cambios["OnBattery"])
+        sistema.signal_subscribe("org.freedesktop.UPower", "org.freedesktop.DBus.Properties",
+                                 "PropertiesChanged", "/org/freedesktop/UPower", None,
+                                 Gio.DBusSignalFlags.NONE, cambio)
+
+    def _bateria(self, en_bateria):
+        if en_bateria == self.en_bateria:
+            return
+        self.en_bateria = en_bateria
+        modo = self.conf["battery_mode"]
+        try:
+            if en_bateria and modo in MODOS and modo != self.modo:
+                log(f"con batería: {self.modo} -> {modo}")
+                antes = self.modo
+                self.poner_modo(modo, manual=False)
+                self.modo_antes_bateria = antes
+            elif not en_bateria and self.modo_antes_bateria:
+                antes, self.modo_antes_bateria = self.modo_antes_bateria, None
+                log(f"con cargador: vuelve a {antes}")
+                self.poner_modo(antes, manual=False)
+        except ValueError as e:
+            log(f"modo por batería: {e}")
+
     # ----- avisos ------------------------------------------------------------
 
     def _avisar(self, titulo, icono, cuerpo="", urgente=False):
@@ -556,6 +703,10 @@ class Servicio:
                 self.siguiente()
             elif metodo == "SetBrightness":
                 self.poner_brillo(params.unpack()[0])
+            elif metodo == "Activity":
+                self.actividad()
+            elif metodo == "SetFullscreen":
+                self.pantalla_completa(params.unpack()[0])
             inv.return_value(None)
         except ValueError as e:
             inv.return_dbus_error(f"{BUS}.Error", str(e))

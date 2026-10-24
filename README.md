@@ -132,7 +132,15 @@ Si el servicio no está, el launcher usa `wtype`.
 
 ### Configuración
 
-**GlassPad Configurator** (`glasspad-config`; Ajustes en el Control Center, o "GlassPad Configurator" en el menú de apps) se abre en la pantalla principal. Permite elegir el fondo, el difuminado, cuánto oscurecerlo, los segundos para volver del touchpad temporal y los atajos de Quick Key: agregar, editar, reordenar, quitar o restablecer, grabando la combinación con el teclado. Escribe en `config.toml`, y el launcher aplica los cambios al instante:
+**GlassPad Configurator** (`glasspad-config`; Ajustes en el Control Center, o "GlassPad Configurator" en el menú de apps) se abre en la pantalla principal y tiene tres pestañas:
+
+- **Apariencia**: fondo, difuminado y cuánto oscurecerlo.
+- **ScreenPad**: modos de Fn+F6, modo al iniciar sesión, bloquear el pad en apagado, alejar el cursor, atenuar, modo con batería y touchpad temporal.
+- **Quick Key**: agregar, editar, reordenar, quitar o restablecer atajos, grabando la combinación con el teclado.
+
+**Atenuar** baja el brillo del pad (al 5 % por omisión) sin apagarlo, tras unos minutos sin tocarlo o mientras la ventana activa de la pantalla principal está en pantalla completa; al tocar el pad vuelve. **Con batería** puede pasar a otro modo y volver al anterior al enchufar. La parte superior del launcher muestra la batería y su porcentaje.
+
+Todo se guarda en `config.toml` y se aplica al instante:
 
 ```toml
 background_mode = "default"   # "default", "color" o "image"
@@ -142,6 +150,11 @@ background_blur = 12          # px, solo en el touchpad temporal
 background_dim = 0            # % de negro sobre el fondo
 touchpad_return = 4           # s sin tocar para volver al launcher; 0 = nunca
 quick_keys = [["Copiar", "edit-copy-symbolic", "ctrl+c"], ["Captura", "applets-screenshooter-symbolic", "Print"]]
+idle_dim = true               # atenuar tras idle_dim_minutes sin tocar el pad
+idle_dim_minutes = 2
+fullscreen_dim = true         # atenuar con pantalla completa en la principal
+dim_level = 5                 # % del brillo máximo
+battery_mode = ""             # modo al usar batería; "" = no cambiar
 ```
 
 El orden del inicio se guarda en `~/.local/state/glasspad/inicio.json`. Al instalar, el inicio trae las utilidades de GlassPad; las apps las agrega cada uno.

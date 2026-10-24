@@ -166,6 +166,7 @@ window.glasspad.invisible { background: transparent; }
 .estado { margin: 50px 77px 0 77px; }
 .reloj { font-size: 100px; font-weight: 300; letter-spacing: -2px;
          text-shadow: 0 0 18px alpha(black, 0.65), 0 2px 4px alpha(black, 0.5); }
+.bateria { margin-left: 34px; }
 .fecha { font-size: 31px; opacity: 0.9;
          text-shadow: 0 0 10px alpha(black, 0.8), 0 1px 3px alpha(black, 0.6); }
 .mosaico { background: none; border: none; box-shadow: none; padding: 0; min-width: 211px;
@@ -1060,6 +1061,74 @@ class Wayland:
         return True
 
 
+class Bateria(Gtk.Widget):
+    """Batería dibujada con su nivel; rayo si carga, enchufe si está llena y conectada."""
+
+    def __init__(self):
+        super().__init__(valign=Gtk.Align.CENTER, can_target=False)
+        self.nivel = 1.0
+        self.estado = "descarga"    # "descarga", "carga" o "llena"
+
+    def do_measure(self, orientacion, _para):
+        n = 64 if orientacion == Gtk.Orientation.HORIZONTAL else 30
+        return n, n, -1, -1
+
+    def poner(self, nivel, estado):
+        self.nivel, self.estado = max(0.0, min(1.0, nivel)), estado
+        self.queue_draw()
+
+    @staticmethod
+    def _rgba(texto):
+        c = Gdk.RGBA()
+        c.parse(texto)
+        return c
+
+    @staticmethod
+    def _rect(x, y, w, h, r):
+        rr = Gsk.RoundedRect()
+        rr.init_from_rect(Graphene.Rect().init(x, y, w, h), r)
+        b = Gsk.PathBuilder.new()
+        b.add_rounded_rect(rr)
+        return b.to_path()
+
+    def do_snapshot(self, snap):
+        w, h = self.get_width(), self.get_height()
+        cuerpo_w, borde = w - 7, 3
+        blanco = self._rgba("rgba(255,255,255,0.92)")
+        snap.append_stroke(self._rect(borde / 2, borde / 2, cuerpo_w - borde, h - borde, 7),
+                           Gsk.Stroke.new(borde), blanco)
+        snap.append_fill(self._rect(cuerpo_w + 1, h * 0.32, 5, h * 0.36, 2),
+                         Gsk.FillRule.WINDING, blanco)
+        if self.estado in ("carga", "llena"):
+            color = "#3FD687"
+        elif self.nivel < 0.15:
+            color = "#e5484d"
+        else:
+            color = "rgba(255,255,255,0.92)"
+        interior = cuerpo_w - 2 * borde - 4
+        if self.nivel > 0:
+            snap.append_fill(self._rect(borde + 2, borde + 2, max(3, interior * self.nivel),
+                                        h - 2 * borde - 4, 4),
+                             Gsk.FillRule.WINDING, self._rgba(color))
+        oscuro = self._rgba("#0b1424")
+        cx, cy = cuerpo_w / 2, h / 2
+        b = Gsk.PathBuilder.new()
+        if self.estado == "carga":
+            puntos = ((cx + 2, cy - 11), (cx - 7, cy + 2), (cx - 1, cy + 2), (cx - 3, cy + 11),
+                      (cx + 7, cy - 2), (cx + 1, cy - 2))
+            b.move_to(*puntos[0])
+            for px, py in puntos[1:]:
+                b.line_to(px, py)
+            b.close()
+            snap.append_fill(b.to_path(), Gsk.FillRule.WINDING, oscuro)
+        elif self.estado == "llena":
+            b.add_rect(Graphene.Rect().init(cx - 5, cy - 6, 9, 12))
+            b.add_rect(Graphene.Rect().init(cx - 11, cy - 4, 6, 2.5))
+            b.add_rect(Graphene.Rect().init(cx - 11, cy + 1.5, 6, 2.5))
+            b.add_rect(Graphene.Rect().init(cx + 4, cy - 1.25, 7, 2.5))
+            snap.append_fill(b.to_path(), Gsk.FillRule.WINDING, oscuro)
+
+
 class Ecualizador(Gtk.Widget):
     """Cuatro barras que se mueven mientras suena algo y quedan quietas en pausa."""
 
@@ -1171,6 +1240,8 @@ class Launcher(Gtk.Application):
         self.fichas_categoria = []
         self.ficha_clave = {}
         self.wl = None
+        self.ultima_actividad = 0
+        self.pantalla_completa = False
         self.del_pad = leer_ventanas_pad()
         self.reintento_pad = 0
         self.apps_por_id = {}       # app_id de una ventana -> DesktopAppInfo o None
@@ -1302,9 +1373,41 @@ class Launcher(Gtk.Application):
         self.fecha = Gtk.Label(css_classes=["fecha"], valign=Gtk.Align.BASELINE)
         caja.append(self.reloj)
         caja.append(self.fecha)
+        self.bateria = Bateria()
+        self.bateria_pct = Gtk.Label(css_classes=["fecha", "pct-bateria"])
+        self.caja_bateria = Gtk.Box(spacing=12, valign=Gtk.Align.CENTER, visible=False,
+                                    css_classes=["bateria"])
+        self.caja_bateria.append(self.bateria)
+        self.caja_bateria.append(self.bateria_pct)
+        caja.append(self.caja_bateria)
+        self._iniciar_bateria()
         self._tic_reloj()
         GLib.timeout_add_seconds(5, self._tic_reloj)
         return caja
+
+    def _iniciar_bateria(self):
+        try:
+            self.upower = Gio.DBusProxy.new_for_bus_sync(
+                Gio.BusType.SYSTEM, Gio.DBusProxyFlags.NONE, None, "org.freedesktop.UPower",
+                "/org/freedesktop/UPower/devices/DisplayDevice",
+                "org.freedesktop.UPower.Device", None)
+        except GLib.Error as e:
+            log(f"sin UPower: {e.message}")
+            return
+        self.upower.connect("g-properties-changed", lambda *_: self._mostrar_bateria())
+        self._mostrar_bateria()
+
+    def _mostrar_bateria(self):
+        prop = lambda n: (self.upower.get_cached_property(n).unpack()
+                          if self.upower.get_cached_property(n) is not None else None)
+        presente, pct, estado = prop("IsPresent"), prop("Percentage"), prop("State")
+        self.caja_bateria.set_visible(bool(presente) and pct is not None)
+        if not presente or pct is None:
+            return
+        # UPower: 1 cargando, 4 llena, 5 pendiente de carga (conectada)
+        self.bateria.poner(pct / 100, "carga" if estado == 1 else
+                           "llena" if estado in (4, 5) else "descarga")
+        self.bateria_pct.set_label(f"{round(pct)}%")
 
     def _tic_reloj(self):
         ahora = time.localtime()
@@ -2363,8 +2466,21 @@ class Launcher(Gtk.Application):
         return caja
 
     def _ventanas_cambio(self):
+        self._avisar_pantalla_completa()
         if self.ventana and self.paginas.get_visible_child_name() == "ventanas":
             self._llenar_ventanas()
+
+    def _avisar_pantalla_completa(self, forzar=False):
+        """Avisa a glasspadd si la ventana activa de la principal está en pantalla completa."""
+        if not self.wl or not self.servicio:
+            return
+        pad = self._conector_pad()
+        completa = any("pantalla completa" in v["estados"] and "activa" in v["estados"]
+                       and self.wl.salida(c) != pad for c, v in self.wl.lista())
+        if completa != self.pantalla_completa or forzar:
+            self.pantalla_completa = completa
+            self.servicio.call("SetFullscreen", GLib.Variant("(b)", (completa,)),
+                               Gio.DBusCallFlags.NONE, 500, None, None)
 
     def _conector_pad(self):
         salida = buscar_salida(self.conf)
@@ -2663,6 +2779,10 @@ class Launcher(Gtk.Application):
     def al_apoyar(self):
         if self._en_touchpad():
             self._cancelar_vuelta()
+        ahora = time.monotonic()
+        if self.servicio and ahora - self.ultima_actividad >= 1:
+            self.ultima_actividad = ahora
+            self.servicio.call("Activity", None, Gio.DBusCallFlags.NONE, 500, None, None)
 
     def al_soltar(self):
         if self._en_touchpad():
@@ -2801,6 +2921,7 @@ class Launcher(Gtk.Application):
         self.servicio.connect("g-signal", self._señal)
         modo = self.servicio.get_cached_property("Mode")
         self._aplicar_modo(modo.unpack() if modo else None)
+        self._avisar_pantalla_completa(forzar=True)
 
     def _sin_servicio(self, *_):
         self.servicio = None
