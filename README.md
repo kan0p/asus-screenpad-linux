@@ -109,9 +109,12 @@ El **Control Center** sube desde la barra: brillo del pad (se arrastra con el de
 - **Quick Key**: hasta 16 atajos (copiar, pegar, deshacer, captura…) que se mandan a la app activa con `wtype`.
 - **Calculadora**: `%` es porcentaje; **Insertar** escribe el resultado en la app activa.
 - **Calendario**: el mes con el día de hoy; se desliza de lado para cambiar de mes.
+- **Temporizador y cronómetro**: temporizador con presets y ajuste de a 10 s, alarma y aviso al terminar; cronómetro con vueltas.
+- **Monitor**: CPU y temperatura, memoria, GPU NVIDIA, consumo de la batería, red y disco, con gráfico de los últimos 60 s. Solo mide mientras está abierto.
+- **Zoom**: acercar, alejar y volver a normal con el zoom de COSMIC, o pellizcando con dos dedos sobre el pad.
 - **Ventanas**: las ventanas abiertas, agrupadas por pantalla. Tocar una la trae al frente; cada una se puede minimizar, cerrar o mover entre la pantalla principal y el pad.
 
-Las cinco son mosaicos que se pueden poner en el inicio.
+Son mosaicos que se pueden poner en el inicio; al instalar (o al llegar una nueva) aparecen solos, salvo Ventanas, que está en la barra.
 
 Las ventanas que están en el pad pasan solas a la pantalla principal al salir del modo `monitor` (launcher, dark u off) y regresan al volver. Ventanas usa los protocolos de COSMIC (`ext_foreign_toplevel_list_v1`, `zcosmic_toplevel_info_v1`, `zcosmic_toplevel_manager_v1` y `ext_workspace_manager_v1`) con un cliente Wayland propio, sin dependencias.
 
@@ -121,10 +124,10 @@ Cuando una app reproduce algo (YouTube en el navegador, Spotify, VLC…), la bar
 
 ### Teclado numérico virtual
 
-Algunas apps (Word online, por ejemplo) ignoran las teclas del teclado virtual de Wayland. Por eso Number Key y el botón Insertar usan `glasspad-numpad`, un servicio de sistema que crea con `uinput` un teclado que **solo tiene las teclas del teclado numérico**: 0–9, `/ * - +`, decimal, Enter y Borrar. Las apps lo ven como un teclado numérico USB.
+Algunas apps (Word online, por ejemplo) ignoran las teclas del teclado virtual de Wayland. Por eso Number Key, el botón Insertar y el Zoom usan `glasspad-numpad`, un servicio de sistema que crea con `uinput` un teclado que **solo tiene las teclas del teclado numérico** (0–9, `/ * - +`, decimal, Enter y Borrar) y **dos combinaciones fijas**: Super+punto y Super+coma, el zoom de COSMIC. Las apps lo ven como un teclado numérico USB.
 
 - Recibe los pedidos por `/run/glasspad-numpad.sock`, que systemd crea con permisos solo para el usuario que instaló.
-- Descarta cualquier otra tecla, así que no puede escribir texto ni ejecutar atajos.
+- Descarta cualquier otra tecla o combinación, así que no puede escribir texto ni ejecutar otros atajos.
 - Corre sin red, con el sistema de archivos en solo lectura y con acceso únicamente a `/dev/uinput` y a los dispositivos de entrada.
 - Con Bloq Num apagado lo enciende solo durante cada envío. La tecla decimal escribe lo que defina la distribución de teclado (punto en la latinoamericana).
 

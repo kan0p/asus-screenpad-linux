@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-# glasspad-numpad - teclado numérico virtual para Number Key
+# glasspad-numpad - teclado numérico virtual para Number Key y el zoom
 # kan0p - https://github.com/kan0p/asus-screenpad-linux - GPL-3.0-or-later
 #
-# Protocolo del socket: una línea por tecla, con un nombre de TECLAS; el resto se descarta.
+# Protocolo del socket: una línea por tecla, con un nombre de TECLAS o COMBOS; el resto
+# se descarta.
 #
 # uso: glasspad-numpad [RUTA_SOCKET]   (sin argumento, el socket lo pasa systemd)
 
@@ -18,6 +19,8 @@ TECLAS = {
     "KPMINUS": e.KEY_KPMINUS, "KPPLUS": e.KEY_KPPLUS, "KPENTER": e.KEY_KPENTER,
     "BACKSPACE": e.KEY_BACKSPACE,
 }
+# combinaciones fijas: zoom de COSMIC (Super+punto / Super+coma)
+COMBOS = {"ZOOMIN": (e.KEY_LEFTMETA, e.KEY_DOT), "ZOOMOUT": (e.KEY_LEFTMETA, e.KEY_COMMA)}
 # con Bloq Num apagado estas teclas son Inicio, Fin, Suprimir...
 CON_BLOQNUM = {n for n in TECLAS if n[2:].isdigit() or n == "KPDOT"}
 MAX_LINEA = 32
@@ -45,7 +48,8 @@ def bloqnum():
 
 class Teclado:
     def __init__(self):
-        self.ui = UInput({e.EV_KEY: [*TECLAS.values(), e.KEY_NUMLOCK]},
+        self.ui = UInput({e.EV_KEY: [*TECLAS.values(), e.KEY_NUMLOCK,
+                                     *{c for combo in COMBOS.values() for c in combo}]},
                          name="GlassPad Number Key")
         self.recientes = []
         self.estado = None          # (bloq num, momento) que dejó el último lote
@@ -54,6 +58,13 @@ class Teclado:
         self.ui.write(e.EV_KEY, codigo, 1)
         self.ui.syn()
         self.ui.write(e.EV_KEY, codigo, 0)
+        self.ui.syn()
+
+    def combo(self, modificador, tecla):
+        self.ui.write(e.EV_KEY, modificador, 1)
+        self.ui.syn()
+        self.tocar(tecla)
+        self.ui.write(e.EV_KEY, modificador, 0)
         self.ui.syn()
 
     def presionar(self, nombres):
@@ -72,7 +83,10 @@ class Teclado:
         if encender:
             self.tocar(e.KEY_NUMLOCK)
         for n in nombres:
-            self.tocar(TECLAS[n])
+            if n in COMBOS:
+                self.combo(*COMBOS[n])
+            else:
+                self.tocar(TECLAS[n])
         if encender:
             self.tocar(e.KEY_NUMLOCK)
         self.estado = (encendido, time.monotonic())
@@ -123,7 +137,7 @@ def main():
             *lineas, resto = buf.split(b"\n")
             pendientes[s] = resto[-MAX_LINEA:]
             lote = [n for n in (l.strip().decode("ascii", "replace") for l in lineas)
-                    if n in TECLAS]
+                    if n in TECLAS or n in COMBOS]
             if lote:
                 teclado.presionar(lote)
 

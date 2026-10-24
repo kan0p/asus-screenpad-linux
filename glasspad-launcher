@@ -13,8 +13,8 @@ if LIB_LAYER not in os.environ.get("LD_PRELOAD", ""):
     os.environ["LD_PRELOAD"] = " ".join(filter(None, [LIB_LAYER, os.environ.get("LD_PRELOAD")]))
     os.execv(sys.executable, [sys.executable, *sys.argv])
 
-import ast, calendar, datetime, json, locale, math, operator, re, shutil, signal, socket
-import struct, subprocess, time, tomllib
+import ast, calendar, datetime, glob, json, locale, math, operator, re, shutil, signal
+import socket, struct, subprocess, time, tomllib
 
 import evdev
 from evdev import ecodes
@@ -102,6 +102,9 @@ UTILIDADES = {
     "glasspad:atajos": ("quick-key", "Quick Key", "atajos"),
     "glasspad:calculadora": ("calculator", "Calculadora", "calculadora"),
     "glasspad:calendario": ("calendar", "Calendario", "calendario"),
+    "glasspad:temporizador": ("timer", "Temporizador", "temporizador"),
+    "glasspad:monitor": ("monitor", "Monitor", "monitor"),
+    "glasspad:zoom": ("zoom", "Zoom", "zoom"),
     "glasspad:ventanas": ("app-navigator", "Ventanas", "ventanas"),
 }
 # utilidades que se agregan solas al inicio la primera vez (Ventanas está en la barra)
@@ -121,6 +124,8 @@ CATEGORIAS = [
     ("sistema", "Sistema", {"System", "Settings", "Monitor", "TerminalEmulator", "FileManager"}),
 ]
 
+SONIDO_ALARMA = "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga"
+ZOOM_PASOS_NORMAL = 12      # "alejar" repetido para volver al zoom normal
 MUSICA_OCULTAR_S = 600      # en pausa más que esto, el botón de música se oculta
 PAGINAS_UTILIDAD = {u[2] for u in UTILIDADES.values()}
 
@@ -291,6 +296,22 @@ scale.brillo slider { min-width: 54px; min-height: 54px; margin: -17px; border-r
 .v-app { font-size: 22px; opacity: 0.7; }
 .control.peligro { background: alpha(#e5484d, 0.35); }
 .vacio { font-size: 32px; opacity: 0.7; margin-top: 120px; }
+.panel-reloj { margin-top: 30px; }
+.t-texto { font-size: 110px; font-weight: 300; font-feature-settings: "tnum"; }
+.c-texto { font-size: 150px; font-weight: 300; font-feature-settings: "tnum"; }
+.vueltas { background: alpha(black, 0.4); border: 1px solid alpha(white, 0.14);
+           border-radius: 30px; padding: 20px 26px; }
+.vuelta { font-size: 28px; padding: 8px 4px; border-bottom: 1px solid alpha(white, 0.08); }
+.vuelta .parcial { opacity: 0.6; margin-right: 26px; font-feature-settings: "tnum"; }
+.vuelta .total { font-weight: 600; font-feature-settings: "tnum"; }
+.tarjeta-monitor { background: alpha(black, 0.42); border: 1px solid alpha(white, 0.14);
+                   border-radius: 34px; padding: 26px 30px 18px 30px; }
+.m-nombre { font-size: 24px; opacity: 0.7; font-weight: 600; }
+.m-valor { font-size: 54px; font-weight: 600; font-feature-settings: "tnum"; }
+.m-detalle { font-size: 24px; opacity: 0.75; }
+.control.grande { min-width: 170px; min-height: 170px; border-radius: 85px; }
+.control.grande image { -gtk-icon-size: 76px; }
+.pista-zoom { font-size: 28px; opacity: 0.75; }
 """
 
 
@@ -431,6 +452,18 @@ def guardar_ventanas_pad(ids):
     with open(tmp, "w") as f:
         json.dump(sorted(ids), f)
     os.replace(tmp, VENTANAS_PAD)
+
+
+def cronometro_texto(t):
+    m, s = divmod(t, 60)
+    return f"{int(m):02d}:{s:05.2f}"
+
+
+def velocidad(bps):
+    for unidad in ("B/s", "KB/s", "MB/s"):
+        if bps < 1024 or unidad == "MB/s":
+            return f"{bps:.0f} {unidad}" if unidad == "B/s" else f"{bps:.1f} {unidad}"
+        bps /= 1024
 
 
 def guardar_inicio(ids, ofrecidas=None):
@@ -616,6 +649,9 @@ class Pad:
             return
         if self.max_dedos > 1:
             self._sin_objetivo()
+            if len(self.dedos) == 2:
+                (x1, y1), (x2, y2) = self.dedos.values()
+                self.launcher.dos_dedos(math.hypot(x2 - x1, y2 - y1))
             return
         pos = self._a_ventana(self.x, self.y)
         if self.inicio is None:
@@ -1129,6 +1165,217 @@ class Bateria(Gtk.Widget):
             snap.append_fill(b.to_path(), Gsk.FillRule.WINDING, oscuro)
 
 
+class Anillo(Gtk.Widget):
+    """Anillo de progreso del temporizador."""
+
+    def __init__(self):
+        super().__init__(can_target=False)
+        self.fraccion = 1.0
+
+    def do_measure(self, _orientacion, _para):
+        return 520, 520, -1, -1
+
+    def poner(self, fraccion):
+        self.fraccion = max(0.0, min(1.0, fraccion))
+        self.queue_draw()
+
+    def do_snapshot(self, snap):
+        w, h = self.get_width(), self.get_height()
+        grosor = 26
+        r = min(w, h) / 2 - grosor
+        cx, cy = w / 2, h / 2
+        fondo = Gdk.RGBA()
+        fondo.parse("rgba(255,255,255,0.12)")
+        b = Gsk.PathBuilder.new()
+        b.add_circle(Graphene.Point().init(cx, cy), r)
+        snap.append_stroke(b.to_path(), Gsk.Stroke.new(grosor), fondo)
+        if self.fraccion <= 0:
+            return
+        color = Gdk.RGBA()
+        color.parse("#e5484d" if self.has_css_class("terminado") else "#F7B733")
+        b = Gsk.PathBuilder.new()
+        pasos = max(2, int(120 * self.fraccion))
+        for i in range(pasos + 1):
+            a = -math.pi / 2 + 2 * math.pi * self.fraccion * i / pasos
+            punto = (cx + r * math.cos(a), cy + r * math.sin(a))
+            (b.move_to if i == 0 else b.line_to)(*punto)
+        trazo = Gsk.Stroke.new(grosor)
+        trazo.set_line_cap(Gsk.LineCap.ROUND)
+        snap.append_stroke(b.to_path(), trazo, color)
+
+
+class Grafico(Gtk.Widget):
+    """Últimos 60 valores (0..1) como área con línea."""
+
+    def __init__(self):
+        super().__init__(vexpand=True, can_target=False)
+        self.valores = []
+
+    def do_measure(self, orientacion, _para):
+        return (0, 0, -1, -1) if orientacion == Gtk.Orientation.HORIZONTAL else (70, 90, -1, -1)
+
+    def agregar(self, v):
+        self.valores = (self.valores + [max(0.0, min(1.0, v))])[-60:]
+        self.queue_draw()
+
+    def do_snapshot(self, snap):
+        if len(self.valores) < 2:
+            return
+        w, h = self.get_width(), self.get_height()
+        paso = w / 59
+        x0 = w - paso * (len(self.valores) - 1)
+        puntos = [(x0 + i * paso, h - 4 - v * (h - 8)) for i, v in enumerate(self.valores)]
+        area = Gsk.PathBuilder.new()
+        area.move_to(puntos[0][0], h)
+        for p in puntos:
+            area.line_to(*p)
+        area.line_to(puntos[-1][0], h)
+        area.close()
+        relleno = Gdk.RGBA()
+        relleno.parse("rgba(77,155,255,0.25)")
+        snap.append_fill(area.to_path(), Gsk.FillRule.WINDING, relleno)
+        linea = Gsk.PathBuilder.new()
+        linea.move_to(*puntos[0])
+        for p in puntos[1:]:
+            linea.line_to(*p)
+        color = Gdk.RGBA()
+        color.parse("#4d9bff")
+        trazo = Gsk.Stroke.new(3)
+        trazo.set_line_join(Gsk.LineJoin.ROUND)
+        snap.append_stroke(linea.to_path(), trazo, color)
+
+
+class Medidor:
+    """Mide CPU, memoria, GPU, batería, red y disco una vez por segundo mientras está activo."""
+
+    def __init__(self, al_medir):
+        self.al_medir = al_medir
+        self.fuente = 0
+        self.cpu_antes = None
+        self.red_antes = None
+        self.red_max = 1.0
+        self.gpu = None             # (uso %, °C, MiB usados, MiB totales)
+        self.gpu_pidiendo = False
+        self.n = 0
+
+    def activar(self, si):
+        if si and not self.fuente:
+            self._medir()
+            self.fuente = GLib.timeout_add(1000, self._medir)
+        elif not si and self.fuente:
+            GLib.source_remove(self.fuente)
+            self.fuente = 0
+
+    @staticmethod
+    def _leer(ruta):
+        try:
+            with open(ruta) as f:
+                return f.read()
+        except OSError:
+            return ""
+
+    def _cpu(self):
+        campos = [int(x) for x in self._leer("/proc/stat").split("\n")[0].split()[1:]]
+        ocioso, total = campos[3] + campos[4], sum(campos)
+        uso = 0.0
+        if self.cpu_antes:
+            dt = total - self.cpu_antes[1]
+            uso = 1 - (ocioso - self.cpu_antes[0]) / dt if dt else 0.0
+        self.cpu_antes = (ocioso, total)
+        temp = None
+        for h in glob.glob("/sys/class/hwmon/hwmon*"):
+            if self._leer(h + "/name").strip() == "coretemp":
+                t = self._leer(h + "/temp1_input").strip()
+                temp = int(t) / 1000 if t else None
+        return (f"{uso * 100:.0f} %", f"{temp:.0f} °C" if temp is not None else "", uso)
+
+    def _memoria(self):
+        m = {l.split(":")[0]: int(l.split()[1]) for l in self._leer("/proc/meminfo").splitlines()
+             if l.split(":")[0] in ("MemTotal", "MemAvailable")}
+        total, libre = m.get("MemTotal", 1), m.get("MemAvailable", 0)
+        usado = total - libre
+        return (f"{usado / 1048576:.1f} GB", f"de {total / 1048576:.1f} GB", usado / total)
+
+    def _pedir_gpu(self):
+        if self.gpu_pidiendo or not shutil.which("nvidia-smi"):
+            return
+        self.gpu_pidiendo = True
+        try:
+            p = Gio.Subprocess.new(["nvidia-smi", "--query-gpu=utilization.gpu,temperature.gpu,"
+                                    "memory.used,memory.total", "--format=csv,noheader,nounits"],
+                                   Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE)
+        except GLib.Error:
+            self.gpu_pidiendo = False
+            return
+
+        def listo(p, res):
+            self.gpu_pidiendo = False
+            try:
+                _, salida, _ = p.communicate_utf8_finish(res)
+                self.gpu = tuple(float(x) for x in salida.split("\n")[0].split(","))
+            except (GLib.Error, ValueError, AttributeError):
+                self.gpu = None
+        p.communicate_utf8_async(None, None, listo)
+
+    def _gpu(self):
+        if self.n % 2 == 0:
+            self._pedir_gpu()
+        if not self.gpu:
+            return ("—", "sin datos", 0.0)
+        uso, temp, usada, total = self.gpu
+        memoria = f"{usada:.0f} MB" if usada < 1024 else f"{usada / 1024:.1f} GB"
+        return (f"{uso:.0f} %", f"{temp:.0f} °C · {memoria} de {total / 1024:.0f} GB", uso / 100)
+
+    def _bateria(self):
+        base = "/sys/class/power_supply/BAT0/"
+        potencia = self._leer(base + "power_now").strip()
+        capacidad = self._leer(base + "capacity").strip()
+        estado = self._leer(base + "status").strip()
+        if not potencia:
+            return ("—", "sin batería", 0.0)
+        w = int(potencia) / 1e6
+        estados = {"Charging": "cargando", "Discharging": "con batería", "Full": "llena",
+                   "Not charging": "conectada"}
+        return (f"{w:.1f} W", f"{capacidad} % · {estados.get(estado, estado.lower())}",
+                min(1.0, w / 60))
+
+    def _red(self):
+        rx = tx = 0
+        for linea in self._leer("/proc/net/dev").splitlines()[2:]:
+            nombre, datos = linea.split(":", 1)
+            if nombre.strip() == "lo":
+                continue
+            campos = datos.split()
+            rx += int(campos[0])
+            tx += int(campos[8])
+        ahora = time.monotonic()
+        bajada = subida = 0.0
+        if self.red_antes:
+            dt = ahora - self.red_antes[2] or 1
+            bajada, subida = (rx - self.red_antes[0]) / dt, (tx - self.red_antes[1]) / dt
+        self.red_antes = (rx, tx, ahora)
+        self.red_max = max(self.red_max * 0.98, bajada + subida, 1024)
+        return (f"↓ {velocidad(bajada)}", f"↑ {velocidad(subida)}", (bajada + subida) / self.red_max)
+
+    def _disco(self):
+        st = os.statvfs("/")
+        total, libre = st.f_blocks * st.f_frsize, st.f_bavail * st.f_frsize
+        usado = total - libre
+        return (f"{usado / 1e9:.0f} GB", f"de {total / 1e9:.0f} GB en /", usado / total)
+
+    def _medir(self):
+        self.n += 1
+        datos = {}
+        for clave, f in (("cpu", self._cpu), ("memoria", self._memoria), ("gpu", self._gpu),
+                         ("bateria", self._bateria), ("red", self._red), ("disco", self._disco)):
+            try:
+                datos[clave] = f()
+            except (OSError, ValueError, IndexError, ZeroDivisionError):
+                datos[clave] = ("—", "sin datos", 0.0)
+        self.al_medir(datos)
+        return True
+
+
 class Ecualizador(Gtk.Widget):
     """Cuatro barras que se mueven mientras suena algo y quedan quietas en pausa."""
 
@@ -1240,6 +1487,7 @@ class Launcher(Gtk.Application):
         self.fichas_categoria = []
         self.ficha_clave = {}
         self.wl = None
+        self.pellizco = None        # distancia inicial entre dos dedos en la página de zoom
         self.ultima_actividad = 0
         self.pantalla_completa = False
         self.del_pad = leer_ventanas_pad()
@@ -1311,6 +1559,9 @@ class Launcher(Gtk.Application):
         self.paginas.add_named(self._pagina_calculadora(), "calculadora")
         self.paginas.add_named(self._pagina_calendario(), "calendario")
         self.paginas.add_named(self._pagina_ventanas(), "ventanas")
+        self.paginas.add_named(self._pagina_temporizador(), "temporizador")
+        self.paginas.add_named(self._pagina_monitor(), "monitor")
+        self.paginas.add_named(self._pagina_zoom(), "zoom")
         caja = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.estado_w = self._estado()
         self.paginas.connect("notify::visible-child-name", lambda p, _: self.estado_w.set_visible(
@@ -1725,6 +1976,9 @@ class Launcher(Gtk.Application):
                 self.socket_numpad.close()
                 self.socket_numpad = None
         log_una_vez(self.avisados, "numpad", f"sin {SOCKET_NUMPAD}, se usa wtype")
+        if any(t not in KEYSYM_NUMPAD for t in teclas):
+            self._avisar("El zoom necesita el servicio glasspad-numpad")
+            return
         self.escribir([a for t in teclas for a in ("-k", KEYSYM_NUMPAD[t])])
 
     def _aviso_w(self):
@@ -2645,6 +2899,289 @@ class Launcher(Gtk.Application):
                 return c
         return None
 
+    # ----- temporizador y cronómetro -----------------------------------------
+
+    def _pagina_temporizador(self):
+        self.t_total = 5 * 60
+        self.t_restante = float(self.t_total)
+        self.t_fin = None           # monotonic en que termina, si corre
+        self.t_tic = 0
+        self.c_inicio = None        # monotonic desde que corre el cronómetro
+        self.c_acumulado = 0.0
+        self.c_vueltas = []
+        self.c_tic = 0
+
+        self.vista_reloj = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE,
+                                     vexpand=True)
+        self.vista_reloj.add_named(self._vista_temporizador(), "temporizador")
+        self.vista_reloj.add_named(self._vista_cronometro(), "cronometro")
+        fichas = Gtk.Box(spacing=14, halign=Gtk.Align.CENTER)
+        self.ficha_t = self._accion(Gtk.Button(label="Temporizador", css_classes=["chip", "activo"]),
+                                    lambda: self._ver_reloj("temporizador"))
+        self.ficha_c = self._accion(Gtk.Button(label="Cronómetro", css_classes=["chip"]),
+                                    lambda: self._ver_reloj("cronometro"))
+        fichas.append(self.ficha_t)
+        fichas.append(self.ficha_c)
+        caja = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=30,
+                       css_classes=["teclado", "panel-reloj"])
+        caja.append(fichas)
+        caja.append(self.vista_reloj)
+        self._mostrar_temporizador()
+        return caja
+
+    def _ver_reloj(self, vista):
+        self.vista_reloj.set_visible_child_name(vista)
+        self._marcar(self.ficha_t, vista == "temporizador")
+        self._marcar(self.ficha_c, vista == "cronometro")
+
+    def _vista_temporizador(self):
+        self.anillo = Anillo()
+        self.t_texto = Gtk.Label(css_classes=["t-texto"], can_target=False)
+        capas = Gtk.Overlay(child=self.anillo, halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
+        capas.add_overlay(self.t_texto)
+
+        presets = Gtk.Box(spacing=14, halign=Gtk.Align.CENTER)
+        for texto, segundos in (("30 s", 30), ("1 min", 60), ("5 min", 300), ("10 min", 600),
+                                ("15 min", 900), ("30 min", 1800)):
+            presets.append(self._accion(Gtk.Button(label=texto, css_classes=["chip"]),
+                                        lambda s=segundos: self._fijar_temporizador(s)))
+        ajuste = Gtk.Box(spacing=14, halign=Gtk.Align.CENTER)
+        for texto, segundos in (("−1 min", -60), ("−10 s", -10), ("+10 s", 10), ("+1 min", 60)):
+            ajuste.append(self._accion(Gtk.Button(label=texto, css_classes=["chip"]),
+                                       lambda s=segundos: self._ajustar_temporizador(s)))
+        botones = Gtk.Box(spacing=26, halign=Gtk.Align.CENTER)
+        self.t_play = self._control("media-playback-start-symbolic", self._alternar_temporizador,
+                                    ("principal",))
+        botones.append(self._control("view-refresh-symbolic", self._reiniciar_temporizador))
+        botones.append(self.t_play)
+        derecha = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=34,
+                          valign=Gtk.Align.CENTER, hexpand=True)
+        derecha.append(presets)
+        derecha.append(ajuste)
+        derecha.append(botones)
+        caja = Gtk.Box(spacing=60, halign=Gtk.Align.CENTER)
+        caja.append(capas)
+        caja.append(derecha)
+        return caja
+
+    def _fijar_temporizador(self, segundos):
+        self.t_total = segundos
+        self.t_restante = float(segundos)
+        if self.t_fin is not None:
+            self.t_fin = time.monotonic() + segundos
+        self.anillo.remove_css_class("terminado")
+        self._mostrar_temporizador()
+
+    def _ajustar_temporizador(self, segundos):
+        restante = max(0.0, self._restante() + segundos)
+        if restante == 0:
+            return
+        self.t_total = max(self.t_total + segundos, int(restante))
+        self.t_restante = restante
+        if self.t_fin is not None:
+            self.t_fin = time.monotonic() + restante
+        self._mostrar_temporizador()
+
+    def _restante(self):
+        if self.t_fin is None:
+            return self.t_restante
+        return max(0.0, self.t_fin - time.monotonic())
+
+    def _alternar_temporizador(self):
+        if self.t_fin is None:
+            if self.t_restante <= 0:
+                self.t_restante = float(self.t_total)
+            self.t_fin = time.monotonic() + self.t_restante
+            self.anillo.remove_css_class("terminado")
+            if not self.t_tic:
+                self.t_tic = GLib.timeout_add(200, self._tic_temporizador)
+        else:
+            self.t_restante = self._restante()
+            self.t_fin = None
+        self._mostrar_temporizador()
+
+    def _reiniciar_temporizador(self):
+        self.t_fin = None
+        self.t_restante = float(self.t_total)
+        self.anillo.remove_css_class("terminado")
+        self._mostrar_temporizador()
+
+    def _tic_temporizador(self):
+        if self.t_fin is None:
+            self.t_tic = 0
+            return False
+        if self._restante() <= 0:
+            self.t_fin = None
+            self.t_restante = 0.0
+            self.t_tic = 0
+            self._mostrar_temporizador()
+            self._temporizador_terminado()
+            return False
+        self._mostrar_temporizador()
+        return True
+
+    def _mostrar_temporizador(self):
+        restante = self._restante()
+        s = int(restante + 0.999)
+        self.t_texto.set_label(f"{s // 3600}:{s // 60 % 60:02d}:{s % 60:02d}" if s >= 3600
+                               else f"{s // 60:02d}:{s % 60:02d}")
+        self.anillo.poner(restante / self.t_total if self.t_total else 0)
+        self.t_play.set_icon_name("media-playback-pause-symbolic" if self.t_fin is not None
+                                  else "media-playback-start-symbolic")
+
+    def _temporizador_terminado(self):
+        log("temporizador terminado")
+        self.anillo.add_css_class("terminado")
+        if shutil.which("pw-play") and os.path.isfile(SONIDO_ALARMA):
+            try:
+                Gio.Subprocess.new(["pw-play", SONIDO_ALARMA], Gio.SubprocessFlags.NONE)
+            except GLib.Error as e:
+                log(f"sonido: {e.message}")
+        self.bus.call("org.freedesktop.Notifications", "/org/freedesktop/Notifications",
+                      "org.freedesktop.Notifications", "Notify",
+                      GLib.Variant("(susssasa{sv}i)", ("GlassPad", 0, "alarm-symbolic",
+                                                       "Temporizador terminado", "", [], {}, 5000)),
+                      None, Gio.DBusCallFlags.NONE, 1000, None, None)
+        if self.servicio:
+            self.servicio.call("Activity", None, Gio.DBusCallFlags.NONE, 500, None, None)
+
+    def _vista_cronometro(self):
+        self.c_texto = Gtk.Label(label="00:00.00", css_classes=["c-texto"])
+        botones = Gtk.Box(spacing=26, halign=Gtk.Align.CENTER)
+        self.c_play = self._control("media-playback-start-symbolic", self._alternar_cronometro,
+                                    ("principal",))
+        self.c_vuelta = self._control("flag-symbolic" if self._hay_icono("flag-symbolic")
+                                      else "list-add-symbolic", self._vuelta)
+        botones.append(self._control("view-refresh-symbolic", self._reiniciar_cronometro))
+        botones.append(self.c_play)
+        botones.append(self.c_vuelta)
+        izquierda = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=40,
+                            valign=Gtk.Align.CENTER, hexpand=True)
+        izquierda.append(self.c_texto)
+        izquierda.append(botones)
+        self.lista_vueltas = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        vueltas = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
+                                     child=self.lista_vueltas, min_content_width=520,
+                                     css_classes=["vueltas"])
+        caja = Gtk.Box(spacing=50)
+        caja.append(izquierda)
+        caja.append(vueltas)
+        return caja
+
+    def _hay_icono(self, nombre):
+        return Gtk.IconTheme.get_for_display(Gdk.Display.get_default()).has_icon(nombre)
+
+    def _cronometro(self):
+        return self.c_acumulado + (time.monotonic() - self.c_inicio if self.c_inicio else 0)
+
+    def _alternar_cronometro(self):
+        if self.c_inicio is None:
+            self.c_inicio = time.monotonic()
+            if not self.c_tic:
+                self.c_tic = GLib.timeout_add(50, self._tic_cronometro)
+        else:
+            self.c_acumulado = self._cronometro()
+            self.c_inicio = None
+        self.c_play.set_icon_name("media-playback-pause-symbolic" if self.c_inicio
+                                  else "media-playback-start-symbolic")
+        self._tic_cronometro()
+
+    def _reiniciar_cronometro(self):
+        self.c_inicio, self.c_acumulado, self.c_vueltas = None, 0.0, []
+        self._vaciar(self.lista_vueltas)
+        self.c_play.set_icon_name("media-playback-start-symbolic")
+        self._tic_cronometro()
+
+    def _vuelta(self):
+        t = self._cronometro()
+        if not t:
+            return
+        anterior = self.c_vueltas[-1] if self.c_vueltas else 0.0
+        self.c_vueltas.append(t)
+        fila = Gtk.Box(css_classes=["vuelta"])
+        fila.append(Gtk.Label(label=f"Vuelta {len(self.c_vueltas)}", xalign=0, hexpand=True))
+        fila.append(Gtk.Label(label=f"+{cronometro_texto(t - anterior)}", css_classes=["parcial"]))
+        fila.append(Gtk.Label(label=cronometro_texto(t), css_classes=["total"]))
+        self.lista_vueltas.prepend(fila)
+
+    def _tic_cronometro(self):
+        self.c_texto.set_label(cronometro_texto(self._cronometro()))
+        if self.c_inicio is None:
+            self.c_tic = 0
+            return False
+        return True
+
+    # ----- monitor del sistema ------------------------------------------------
+
+    def _pagina_monitor(self):
+        self.tarjetas = {}
+        grilla = Gtk.Grid(column_spacing=24, row_spacing=24, column_homogeneous=True,
+                          row_homogeneous=True, vexpand=True, css_classes=["teclado"])
+        for i, (clave, titulo) in enumerate((("cpu", "CPU"), ("memoria", "Memoria"),
+                                             ("gpu", "GPU NVIDIA"), ("bateria", "Batería"),
+                                             ("red", "Red"), ("disco", "Disco"))):
+            valor = Gtk.Label(xalign=0, css_classes=["m-valor"])
+            detalle = Gtk.Label(xalign=0, css_classes=["m-detalle"], ellipsize=3)
+            grafico = Grafico()
+            tarjeta = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6,
+                              css_classes=["tarjeta-monitor"])
+            tarjeta.append(Gtk.Label(label=titulo, xalign=0, css_classes=["m-nombre"]))
+            tarjeta.append(valor)
+            tarjeta.append(detalle)
+            tarjeta.append(grafico)
+            grilla.attach(tarjeta, i % 3, i // 3, 1, 1)
+            self.tarjetas[clave] = (valor, detalle, grafico)
+        self.medidor = Medidor(self._medicion)
+        self.paginas.connect("notify::visible-child-name", lambda p, _: self.medidor.activar(
+            p.get_visible_child_name() == "monitor"))
+        return grilla
+
+    def _medicion(self, datos):
+        for clave, (valor, detalle, fraccion) in datos.items():
+            v, d, g = self.tarjetas[clave]
+            v.set_label(valor)
+            d.set_label(detalle)
+            g.agregar(fraccion)
+
+    # ----- zoom ---------------------------------------------------------------
+
+    def _pagina_zoom(self):
+        botones = Gtk.Box(spacing=60, halign=Gtk.Align.CENTER)
+        for icono, texto, accion in (("zoom-out-symbolic", "Alejar", lambda: self._zoom(-1)),
+                                     ("zoom-original-symbolic", "Normal", self._zoom_normal),
+                                     ("zoom-in-symbolic", "Acercar", lambda: self._zoom(1))):
+            caja = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+            boton = self._control(icono, accion, ("grande",))
+            caja.append(boton)
+            caja.append(Gtk.Label(label=texto, css_classes=["m-detalle"]))
+            botones.append(caja)
+        pista = Gtk.Label(label="Pellizca con dos dedos sobre el ScreenPad para acercar o alejar",
+                          css_classes=["pista-zoom"], wrap=True, justify=Gtk.Justification.CENTER)
+        caja = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=60,
+                       valign=Gtk.Align.CENTER, vexpand=True, css_classes=["teclado"])
+        caja.append(botones)
+        caja.append(pista)
+        return caja
+
+    def _zoom(self, paso, veces=1):
+        # atajo del compositor: va por el teclado uinput de glasspad-numpad
+        self.numpad(["ZOOMIN" if paso > 0 else "ZOOMOUT"] * veces)
+
+    def _zoom_normal(self):
+        self._zoom(-1, ZOOM_PASOS_NORMAL)
+
+    def dos_dedos(self, distancia):
+        """Pellizco en la página de zoom: cada cambio de ±25 % es un paso de zoom."""
+        if self.paginas.get_visible_child_name() != "zoom" or self._en_touchpad():
+            return
+        if self.pellizco is None:
+            self.pellizco = distancia
+            return
+        razon = distancia / self.pellizco if self.pellizco else 1
+        if razon > 1.25 or razon < 0.8:
+            self._zoom(1 if razon > 1 else -1)
+            self.pellizco = distancia
+
     # ----- barra -------------------------------------------------------------
 
     def _pie(self):
@@ -2785,6 +3322,7 @@ class Launcher(Gtk.Application):
             self.servicio.call("Activity", None, Gio.DBusCallFlags.NONE, 500, None, None)
 
     def al_soltar(self):
+        self.pellizco = None
         if self._en_touchpad():
             self._programar_vuelta()
 
