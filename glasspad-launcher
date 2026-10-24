@@ -3738,11 +3738,39 @@ class Launcher(Gtk.Application):
             aj.set_value(aj.get_value() - dy)
 
     def _abrir(self, app):
+        """Abre la app en su propio scope de systemd, fuera del cgroup del launcher."""
         debug(f"abre {app.get_id()}")
+        ctx = Gdk.Display.get_default().get_app_launch_context()
+        archivo = app.get_filename()
+        if not (archivo and shutil.which("systemd-run") and shutil.which("gio")):
+            try:
+                app.launch([], ctx)
+            except GLib.Error as e:
+                log(f"no se pudo abrir {app.get_id()}: {e.message}")
+            return
+        nombre = re.sub(r"[^A-Za-z0-9:_.]", "_", (app.get_id() or "app").removesuffix(".desktop"))
+        lanzador = Gio.SubprocessLauncher.new(Gio.SubprocessFlags.STDERR_PIPE)
+        token = ctx.get_startup_notify_id(app, [])
+        if token:
+            lanzador.setenv("XDG_ACTIVATION_TOKEN", token, True)
+            lanzador.setenv("DESKTOP_STARTUP_ID", token, True)
         try:
-            app.launch([], Gdk.Display.get_default().get_app_launch_context())
+            p = lanzador.spawnv(["systemd-run", "--user", "--scope", "--quiet", "--collect",
+                                 "--slice=app.slice",
+                                 f"--unit=app-glasspad-{nombre}-{os.urandom(4).hex()}.scope",
+                                 "gio", "launch", archivo])
         except GLib.Error as e:
             log(f"no se pudo abrir {app.get_id()}: {e.message}")
+            return
+
+        def listo(p, res):
+            try:
+                _, _, err = p.communicate_utf8_finish(res)
+            except GLib.Error:
+                err = ""
+            if not p.get_successful():
+                log(f"no se pudo abrir {app.get_id()}: {(err or '').strip()}")
+        p.communicate_utf8_async(None, None, listo)
 
     def _abrir_config(self):
         local = os.path.join(AQUI, "glasspad-config")
