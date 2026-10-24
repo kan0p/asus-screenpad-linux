@@ -127,7 +127,7 @@ Cuando una app reproduce algo (YouTube en el navegador, Spotify, VLC…), la bar
 
 `glasspadd` guarda el historial con el protocolo `ext_data_control_v1` de Wayland: lo copiado queda solo en memoria (las imágenes, en `/run/user/…`, privado del usuario) y lo anclado se guarda en `~/.local/state/glasspad/`. Se ignora lo que los gestores de contraseñas marcan como secreto. Si la app que copió algo se cierra, GlassPad vuelve a poner lo último copiado en el portapapeles.
 
-Con **Super+V** (se registra en COSMIC desde el Configurator) el historial aparece en el pad si está en modo `launcher`, o en un panel abajo a la derecha de la pantalla principal en los demás modos: flechas, Enter para pegar y Escape para cerrar. En las terminales pega con Ctrl+Shift+V. `glasspad clipboard` hace lo mismo desde la terminal.
+Con **Super+V** (se registra en COSMIC desde el Configurator) el historial aparece en el pad si está en modo `launcher`, o en un panel abajo a la derecha de la pantalla principal en los demás modos (cada uno se puede desactivar en el Configurator): flechas, Enter para pegar y Escape para cerrar. En las terminales pega con Ctrl+Shift+V. `glasspad clipboard` hace lo mismo desde la terminal.
 
 ### Teclado numérico virtual
 
@@ -147,7 +147,9 @@ Si el servicio no está, el launcher usa `wtype`.
 - **Apariencia**: fondo, difuminado y cuánto oscurecerlo.
 - **ScreenPad**: modos de Fn+F6, modo al iniciar sesión, bloquear el pad en apagado, alejar el cursor, atenuar, modo con batería y touchpad temporal.
 - **Quick Key**: elegir el perfil (generales o de una app) y agregar, editar, reordenar, quitar o restablecer atajos, grabando la combinación con el teclado.
-- **Portapapeles**: activar el historial, registrar Super+V en COSMIC y borrar el historial.
+- **Portapapeles**: activar el historial, registrar Super+V en COSMIC, elegir en qué modos aparece el panel en la pantalla principal y borrar el historial.
+
+El menú de la barra superior tiene **Acerca de GlassPad**, con la versión, el repositorio y la licencia.
 
 **Atenuar** baja el brillo del pad (al 5 % por omisión) sin apagarlo, tras unos minutos sin tocarlo o mientras la ventana activa de la pantalla principal está en pantalla completa; al tocar el pad vuelve. **Con batería** puede pasar a otro modo y volver al anterior al enchufar. La parte superior del launcher muestra la batería y su porcentaje.
 
@@ -167,6 +169,9 @@ fullscreen_dim = true         # atenuar con pantalla completa en la principal
 dim_level = 5                 # % del brillo máximo
 battery_mode = ""             # modo al usar batería; "" = no cambiar
 clipboard_history = true      # historial del portapapeles
+clipboard_popup_monitor = true  # Super+V muestra el panel en la principal en Monitor, Oscuro y Apagado
+clipboard_popup_dark = true
+clipboard_popup_off = true
 ```
 
 El orden del inicio se guarda en `~/.local/state/glasspad/inicio.json`. Al instalar, el inicio trae las utilidades de GlassPad; las apps las agrega cada uno.

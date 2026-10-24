@@ -11,6 +11,8 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
 APP_ID = "io.github.kan0p.GlassPad.Config"
+VERSION = "0.9.0"
+REPOSITORIO = "https://github.com/kan0p/asus-screenpad-linux"
 XDG_CONFIG = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
 CONFIG = os.path.join(XDG_CONFIG, "glasspad", "config.toml")
 
@@ -32,6 +34,9 @@ PREDETERMINADA = {
     "dim_level": 5,
     "battery_mode": "",
     "clipboard_history": True,
+    "clipboard_popup_monitor": True,
+    "clipboard_popup_dark": True,
+    "clipboard_popup_off": True,
 }
 
 ATAJOS_COSMIC = os.path.join(XDG_CONFIG, "cosmic", "com.system76.CosmicSettings.Shortcuts",
@@ -134,8 +139,8 @@ def guardar(conf):
 
 class Ventana(Adw.ApplicationWindow):
     def __init__(self, app):
-        super().__init__(application=app, title="GlassPad Configurator", default_width=640,
-                         default_height=760)
+        super().__init__(application=app, title="GlassPad Configurator", default_width=880,
+                         default_height=920)
         self.conf = leer()
         self.listo = False
 
@@ -149,13 +154,17 @@ class Ventana(Adw.ApplicationWindow):
                 ("quickkey", "Quick Key", "input-keyboard-symbolic",
                  (self._grupo_perfil, self._grupo_atajos)),
                 ("portapapeles", "Portapapeles", "edit-paste-symbolic",
-                 (self._grupo_portapapeles,))):
+                 (self._grupo_portapapeles, self._grupo_panel))):
             pagina = Adw.PreferencesPage()
             for grupo in grupos:
                 pagina.add(grupo())
             pestanas.add_titled_with_icon(pagina, nombre, titulo, icono)
         cabecera = Adw.HeaderBar(title_widget=Adw.ViewSwitcher(
             stack=pestanas, policy=Adw.ViewSwitcherPolicy.WIDE))
+        menu = Gio.Menu()
+        menu.append("Acerca de GlassPad", "app.acerca")
+        cabecera.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu,
+                                         tooltip_text="Menú principal"))
 
         vista = Adw.ToolbarView(content=pestanas)
         vista.add_top_bar(cabecera)
@@ -312,6 +321,15 @@ class Ventana(Adw.ApplicationWindow):
         borrar.connect("activated", lambda _f: self._borrar_historial())
         g.add(borrar)
         self._mostrar_super_v()
+        return g
+
+    def _grupo_panel(self):
+        g = Adw.PreferencesGroup(
+            title="Panel en la pantalla principal",
+            description="Con Super+V en modo Launcher el historial se abre en el ScreenPad; en "
+                        "los demás modos, en un panel en la pantalla principal.")
+        for modo, nombre in (("monitor", "Monitor"), ("dark", "Oscuro"), ("off", "Apagado")):
+            g.add(self._interruptor(f"En modo {nombre}", None, f"clipboard_popup_{modo}"))
         return g
 
     @staticmethod
@@ -716,6 +734,25 @@ class DialogoApp(Adw.Dialog):
 class Config(Adw.Application):
     def __init__(self):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+        accion = Gio.SimpleAction.new("acerca", None)
+        accion.connect("activate", lambda *_: self._acerca())
+        self.add_action(accion)
+
+    def _acerca(self):
+        dialogo = Adw.AboutDialog(
+            application_name="GlassPad",
+            application_icon="input-touchpad",
+            developer_name="kan0p",
+            version=VERSION,
+            comments="¡Gracias por usar GlassPad!\n\nLanzador, modos y utilidades para el "
+                     "ScreenPad de la ASUS ZenBook Pro 15 UX580 en Linux.\n\nHecho en Chile.\n"
+                     "Proyecto independiente, sin relación con ASUS.",
+            website=REPOSITORIO,
+            issue_url=REPOSITORIO + "/issues",
+            copyright="© 2026 kan0p",
+            license_type=Gtk.License.GPL_3_0,
+            developers=[f"kan0p {REPOSITORIO}"])
+        dialogo.present(self.get_active_window())
 
     def do_activate(self):
         ventana = self.get_active_window() or Ventana(self)

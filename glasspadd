@@ -116,7 +116,10 @@ def leer_config():
             "fullscreen_dim": True,
             "dim_level": 5,
             "battery_mode": "",
-            "clipboard_history": True}
+            "clipboard_history": True,
+            "clipboard_popup_monitor": True,
+            "clipboard_popup_dark": True,
+            "clipboard_popup_off": True}
     try:
         with open(CONFIG, "rb") as f:
             conf.update(tomllib.load(f))
@@ -1064,7 +1067,13 @@ class Servicio:
         self._cambio_portapapeles()
 
     def mostrar_portapapeles(self):
-        lugar = "pad" if self.modo == "launcher" and self._hay_launcher() else "principal"
+        if self.modo == "launcher" and self._hay_launcher():
+            lugar = "pad"
+        elif self.conf.get(f"clipboard_popup_{self.modo}", True):
+            lugar = "principal"
+        else:
+            log(f"portapapeles: desactivado en modo {self.modo}")
+            return
         log(f"portapapeles: se muestra en {'el pad' if lugar == 'pad' else 'la pantalla principal'}")
         self.bus.emit_signal(None, RUTA, BUS, "ClipboardRequested", GLib.Variant("(s)", (lugar,)))
 
