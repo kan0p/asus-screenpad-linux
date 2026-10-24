@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-# screenpadctl - controla screenpadd desde la terminal
+# glasspad - controla glasspadd desde la terminal (alias: gpad)
 # kan0p - https://github.com/kan0p/asus-screenpad-linux - GPL-3.0-or-later
-"""uso: screenpadctl status
-       screenpadctl next
-       screenpadctl mode launcher|monitor|dark|off
-       screenpadctl brightness 1-255"""
+"""uso: glasspad status
+       glasspad next
+       glasspad mode launcher|monitor|dark|off
+       glasspad brightness 1-255"""
 
 import sys
 
@@ -12,8 +12,8 @@ import gi
 gi.require_version("Gio", "2.0")
 from gi.repository import Gio, GLib
 
-BUS = "io.github.kan0p.ScreenPad"
-RUTA = "/io/github/kan0p/ScreenPad"
+BUS = "io.github.kan0p.GlassPad"
+RUTA = "/io/github/kan0p/GlassPad"
 
 
 def main(args):
@@ -23,7 +23,7 @@ def main(args):
         p = Gio.DBusProxy.new_for_bus_sync(Gio.BusType.SESSION, Gio.DBusProxyFlags.NONE,
                                            None, BUS, RUTA, BUS, None)
         if p.get_name_owner() is None:
-            sys.exit("screenpadctl: screenpadd no está corriendo")
+            sys.exit("glasspad: glasspadd no está corriendo")
         cmd = args[0]
         if cmd == "status":
             for prop in ("Mode", "Brightness", "Cycle"):
@@ -40,9 +40,9 @@ def main(args):
         else:
             sys.exit(__doc__)
     except GLib.Error as e:
-        # "GDBus.Error:io.github.kan0p.ScreenPad.Error: el launcher no está corriendo"
+        # "GDBus.Error:io.github.kan0p.GlassPad.Error: el launcher no está corriendo"
         mensaje = e.message.split(": ", 1)[-1] if e.message.startswith("GDBus.Error:") else e.message
-        sys.exit(f"screenpadctl: {mensaje}")
+        sys.exit(f"glasspad: {mensaje}")
 
 
 if __name__ == "__main__":

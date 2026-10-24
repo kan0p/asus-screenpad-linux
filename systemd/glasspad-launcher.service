@@ -1,12 +1,12 @@
 [Unit]
-Description=Launcher del ScreenPad
+Description=GlassPad Launcher
 PartOf=graphical-session.target
-After=graphical-session.target screenpadd.service
+After=graphical-session.target glasspadd.service
 # se reinicia cada vez que la salida del pad desaparece
 StartLimitIntervalSec=0
 
 [Service]
-ExecStart=/usr/local/bin/screenpad-launcher
+ExecStart=/usr/local/bin/glasspad-launcher
 Restart=always
 RestartSec=1
 

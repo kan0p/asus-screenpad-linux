@@ -1,10 +1,10 @@
 [Unit]
-Description=Teclado numérico virtual del ScreenPad (Number Key)
-Requires=screenpad-numpad.socket
-After=screenpad-numpad.socket systemd-modules-load.service
+Description=GlassPad: teclado numérico virtual de Number Key
+Requires=glasspad-numpad.socket
+After=glasspad-numpad.socket systemd-modules-load.service
 
 [Service]
-ExecStart=/usr/local/bin/screenpad-numpad
+ExecStart=/usr/local/bin/glasspad-numpad
 Restart=on-failure
 RestartSec=2
 # solo necesita /dev/uinput, leer los LED de Bloq Num en /sys y el socket

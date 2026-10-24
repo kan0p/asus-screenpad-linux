@@ -1,8 +1,8 @@
 [Unit]
-Description=Socket del teclado numérico virtual del ScreenPad
+Description=GlassPad: socket del teclado numérico virtual
 
 [Socket]
-ListenStream=/run/screenpad-numpad.sock
+ListenStream=/run/glasspad-numpad.sock
 # install.sh reemplaza USUARIO: solo ese usuario puede pedir teclas
 SocketUser=USUARIO
 SocketMode=0600

@@ -1,6 +1,8 @@
-# asus-screenpad-linux
+# GlassPad
 
-Scripts para que el ScreenPad de la ZenBook Pro 15 UX580 (UX580GE/GD) funcione en Linux con el driver propietario de NVIDIA: encendido, modos con Fn+F6 y un launcher táctil al estilo de ScreenXpert. Lo uso en Arch con COSMIC (Wayland).
+**GlassPad** hace que el ScreenPad de la ZenBook Pro 15 UX580 (UX580GE/GD) funcione en Linux con el driver propietario de NVIDIA: encendido, modos con Fn+F6 y **GlassPad Launcher**, un launcher táctil al estilo de ScreenXpert. Lo uso en Arch con COSMIC (Wayland).
+
+GlassPad es un proyecto independiente, sin relación con ASUS. El repositorio se llama `asus-screenpad-linux` para que sea fácil de encontrar.
 
 ## Qué pasaba
 
@@ -60,7 +62,7 @@ Para quitarlo: `sudo ./uninstall.sh`.
 
 ## Modos y Fn+F6
 
-En Windows, Fn+F6 cambia el modo del ScreenPad. En Linux el kernel la entrega como `KEY_TOUCHPAD_TOGGLE` en *Asus WMI hotkeys*, y algunos escritorios (COSMIC, GNOME, KDE) la usan para apagar el touchpad por su cuenta. `install.sh` la cambia por `KEY_MACRO1` con una regla hwdb (`udev/70-screenpad.hwdb`), que ningún escritorio usa, y `screenpadd` la escucha directamente con evdev, así que funciona en cualquier compositor:
+En Windows, Fn+F6 cambia el modo del ScreenPad. En Linux el kernel la entrega como `KEY_TOUCHPAD_TOGGLE` en *Asus WMI hotkeys*, y algunos escritorios (COSMIC, GNOME, KDE) la usan para apagar el touchpad por su cuenta. `install.sh` la cambia por `KEY_MACRO1` con una regla hwdb (`udev/70-glasspad.hwdb`), que ningún escritorio usa, y `glasspadd` la escucha directamente con evdev, así que funciona en cualquier compositor:
 
 | Modo | Pantalla | Pad |
 |---|---|---|
@@ -69,7 +71,7 @@ En Windows, Fn+F6 cambia el modo del ScreenPad. En Linux el kernel la entrega co
 | `dark` | brillo 0, negra | touchpad, gastando menos batería |
 | `off` | apagada | bloqueado |
 
-Cada pulsación pasa al siguiente modo y muestra un aviso. `launcher` se salta si el launcher no está corriendo. El orden se cambia en `~/.config/screenpad/config.toml`:
+Cada pulsación pasa al siguiente modo y muestra un aviso. `launcher` se salta si el launcher no está corriendo. El orden se cambia en `~/.config/glasspad/config.toml`:
 
 ```toml
 cycle = ["launcher", "monitor", "dark", "off"]
@@ -84,14 +86,14 @@ Con `startup_mode = "off"` y `off_blocks_pad = false`, el panel arranca apagado 
 
 `install.sh` agrega dos permisos para que esto funcione sin contraseña:
 
-- una regla udev (`udev/70-screenpad.rules`) que da a la sesión acceso de lectura **solo** a las teclas ASUS y al touchpad del pad, no al teclado;
-- una regla sudoers (`sudoers/screenpad`) que permite `screenpad on|replug|off|status|brightness` sin contraseña. `dump-edid` queda fuera, porque escribe archivos como root.
+- una regla udev (`udev/70-glasspad.rules`) que da a la sesión acceso de lectura **solo** a las teclas ASUS y al touchpad del pad, no al teclado;
+- una regla sudoers (`sudoers/glasspad`) que permite `screenpad on|replug|off|status|brightness` sin contraseña. `dump-edid` queda fuera, porque escribe archivos como root.
 
 El brillo se maneja por WMI y no por `/sys/class/backlight`. En 0 apaga solo la retroiluminación: la salida sigue conectada y el touchpad sigue funcionando.
 
-## Launcher
+## GlassPad Launcher
 
-`screenpad-launcher` es la pantalla del modo `launcher`: hora y fecha, una cuadrícula de 4×2 con páginas y una barra con touchpad, todas las apps (o inicio, fuera del inicio), ventanas, música y Control Center. El nodo táctil del panel nunca emite, así que el launcher lee el pad con evdev, lo toma en exclusiva y traduce cada toque a la posición en pantalla. No depende del compositor.
+`glasspad-launcher` es la pantalla del modo `launcher`: hora y fecha, una cuadrícula de 4×2 con páginas y una barra con touchpad, todas las apps (o inicio, fuera del inicio), ventanas, música y Control Center. El nodo táctil del panel nunca emite, así que el launcher lee el pad con evdev, lo toma en exclusiva y traduce cada toque a la posición en pantalla. No depende del compositor.
 
 - **Tocar** abre la app.
 - **Mantener presionado** levanta el mosaico: se arrastra para reordenar, al borde para cambiar de página, y sobre la barra roja para quitarlo del inicio.
@@ -119,9 +121,9 @@ Cuando una app reproduce algo (YouTube en el navegador, Spotify, VLC…), la bar
 
 ### Teclado numérico virtual
 
-Algunas apps (Word online, por ejemplo) ignoran las teclas del teclado virtual de Wayland. Por eso Number Key y el botón Insertar usan `screenpad-numpad`, un servicio de sistema que crea con `uinput` un teclado que **solo tiene las teclas del teclado numérico**: 0–9, `/ * - +`, decimal, Enter y Borrar. Las apps lo ven como un teclado numérico USB.
+Algunas apps (Word online, por ejemplo) ignoran las teclas del teclado virtual de Wayland. Por eso Number Key y el botón Insertar usan `glasspad-numpad`, un servicio de sistema que crea con `uinput` un teclado que **solo tiene las teclas del teclado numérico**: 0–9, `/ * - +`, decimal, Enter y Borrar. Las apps lo ven como un teclado numérico USB.
 
-- Recibe los pedidos por `/run/screenpad-numpad.sock`, que systemd crea con permisos solo para el usuario que instaló.
+- Recibe los pedidos por `/run/glasspad-numpad.sock`, que systemd crea con permisos solo para el usuario que instaló.
 - Descarta cualquier otra tecla, así que no puede escribir texto ni ejecutar atajos.
 - Corre sin red, con el sistema de archivos en solo lectura y con acceso únicamente a `/dev/uinput` y a los dispositivos de entrada.
 - Con Bloq Num apagado lo enciende solo durante cada envío. La tecla decimal escribe lo que defina la distribución de teclado (punto en la latinoamericana).
@@ -130,7 +132,7 @@ Si el servicio no está, el launcher usa `wtype`.
 
 ### Configuración
 
-`screenpad-config` (Ajustes en el Control Center, o "ScreenPad" en el menú de apps) se abre en la pantalla principal. Permite elegir el fondo, el difuminado, cuánto oscurecerlo, los segundos para volver del touchpad temporal y los atajos de Quick Key: agregar, editar, reordenar, quitar o restablecer, grabando la combinación con el teclado. Escribe en `config.toml`, y el launcher aplica los cambios al instante:
+**GlassPad Configurator** (`glasspad-config`; Ajustes en el Control Center, o "GlassPad Configurator" en el menú de apps) se abre en la pantalla principal. Permite elegir el fondo, el difuminado, cuánto oscurecerlo, los segundos para volver del touchpad temporal y los atajos de Quick Key: agregar, editar, reordenar, quitar o restablecer, grabando la combinación con el teclado. Escribe en `config.toml`, y el launcher aplica los cambios al instante:
 
 ```toml
 background_mode = "default"   # "default", "color" o "image"
@@ -142,7 +144,7 @@ touchpad_return = 4           # s sin tocar para volver al launcher; 0 = nunca
 quick_keys = [["Copiar", "edit-copy-symbolic", "ctrl+c"], ["Captura", "applets-screenshooter-symbolic", "Print"]]
 ```
 
-El orden del inicio se guarda en `~/.local/state/screenpad/inicio.json`.
+El orden del inicio se guarda en `~/.local/state/glasspad/inicio.json`. Al instalar, el inicio trae las utilidades de GlassPad; las apps las agrega cada uno.
 
 cosmic-comp 1.10 desconecta a la aplicación que oculta o destruye una superficie layer-shell. Por eso el launcher nunca se oculta: fuera de su modo queda de 1×1 píxel, transparente, en la capa del fondo. Cuando la salida del pad desaparece (modo `off`, `replug`) el compositor la destruye igual; el servicio se reinicia solo y no crea la ventana hasta que la salida vuelve.
 
@@ -167,13 +169,13 @@ I2C_BUS=11
 EDID=/ruta/al/edid.bin
 ```
 
-Desde la sesión, sin root:
+Desde la sesión, sin root, con `glasspad` o su alias `gpad`:
 
 ```
-screenpadctl status          modo, brillo y ciclo actuales
-screenpadctl next            lo mismo que Fn+F6
-screenpadctl mode dark       launcher, monitor, dark u off
-screenpadctl brightness 180  brillo de los modos encendidos (1-255)
+glasspad status          modo, brillo y ciclo actuales
+glasspad next            lo mismo que Fn+F6
+glasspad mode dark       launcher, monitor, dark u off
+glasspad brightness 180  brillo de los modos encendidos (1-255)
 ```
 
 ## Otros problemas que tuve
@@ -181,19 +183,19 @@ screenpadctl brightness 180  brillo de los modos encendidos (1-255)
 - **Touchpad muerto.** COSMIC dejó `input_touchpad_override` en `ForceDisable` cuando apareció el segundo monitor. Lo cambié a `None` en `~/.config/cosmic/com.system76.CosmicComp/v1/input_touchpad_override`.
 - **Cursor invisible.** Por defecto el ScreenPad quedaba en 0,0, a la izquierda de la pantalla principal, y el cursor se iba ahí. Con la disposición de arriba se arregla.
 - **No aparece después de reiniciar.** Revisa `journalctl -u screenpad`. Ahí queda registrado si no encontró la GPU o el EDID.
-- **Fn+F6 no hace nada.** Revisa `journalctl --user -u screenpadd`. Si dice "sin acceso", la regla udev no se aplicó: cierra sesión y vuelve a entrar.
-- **El launcher no aparece.** Revisa `journalctl --user -u screenpad-launcher`. Busca la salida en `/var/lib/screenpad/conector`; si no la encuentra, se puede fijar con `output = "HDMI-A-4"` en `config.toml`.
+- **Fn+F6 no hace nada.** Revisa `journalctl --user -u glasspadd`. Si dice "sin acceso", la regla udev no se aplicó: cierra sesión y vuelve a entrar.
+- **El launcher no aparece.** Revisa `journalctl --user -u glasspad-launcher`. Busca la salida en `/var/lib/screenpad/conector`; si no la encuentra, se puede fijar con `output = "HDMI-A-4"` en `config.toml`.
 
 ## Archivos
 
 - `screenpad`: encendido, EDID y brillo (sh, con un poco de Python para el I2C)
-- `screenpadd`: servicio de sesión con los modos y Fn+F6 (Python, `python-evdev`, `python-gobject`)
-- `screenpadctl`: control de `screenpadd` desde la terminal
-- `screenpad-launcher`: el launcher (GTK4 y gtk4-layer-shell)
-- `screenpad-config`: la configuración en la pantalla principal (libadwaita)
-- `screenpad-numpad`: teclado numérico virtual de Number Key (root, `python-evdev`)
+- `glasspadd`: servicio de sesión con los modos y Fn+F6 (Python, `python-evdev`, `python-gobject`)
+- `glasspad` (alias `gpad`): control de `glasspadd` desde la terminal
+- `glasspad-launcher`: GlassPad Launcher (GTK4 y gtk4-layer-shell)
+- `glasspad-config`: GlassPad Configurator, en la pantalla principal (libadwaita)
+- `glasspad-numpad`: teclado numérico virtual de Number Key (root, `python-evdev`)
 - `icons/`: mosaicos e íconos de interfaz del launcher
-- `systemd/`: `screenpad.service` y `screenpad-numpad.socket`/`.service` (sistema), `screenpadd.service` y `screenpad-launcher.service` (sesión)
+- `systemd/`: `screenpad.service` y `glasspad-numpad.socket`/`.service` (sistema), `glasspadd.service` y `glasspad-launcher.service` (sesión)
 - `udev/`, `sudoers/`: permisos y el cambio de Fn+F6 a `KEY_MACRO1`
 - `install.sh`, `uninstall.sh`
 - `edid/ux580-tsb-original.bin`: el EDID tal como sale del puente, con el checksum malo

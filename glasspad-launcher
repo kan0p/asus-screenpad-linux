@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-# screenpad-launcher - pantalla de inicio del ScreenPad
+# glasspad-launcher - GlassPad Launcher, la pantalla de inicio del ScreenPad
 # kan0p - https://github.com/kan0p/asus-screenpad-linux - GPL-3.0-or-later
 #
-# uso: screenpad-launcher [--debug]
+# uso: glasspad-launcher [--debug]
 
 import os, sys
 
 # gtk4-layer-shell debe cargarse antes que libwayland-client
 LIB_LAYER = "libgtk4-layer-shell.so.0"
 if LIB_LAYER not in os.environ.get("LD_PRELOAD", ""):
-    os.environ["_SCREENPAD_LD_PRELOAD"] = os.environ.get("LD_PRELOAD", "")
+    os.environ["_GLASSPAD_LD_PRELOAD"] = os.environ.get("LD_PRELOAD", "")
     os.environ["LD_PRELOAD"] = " ".join(filter(None, [LIB_LAYER, os.environ.get("LD_PRELOAD")]))
     os.execv(sys.executable, [sys.executable, *sys.argv])
 
@@ -44,40 +44,30 @@ except (ValueError, ImportError):
     signal_add = GLib.unix_signal_add
 
 # La biblioteca ya está cargada: las apps que se abran desde aquí no la necesitan.
-if os.environ.get("_SCREENPAD_LD_PRELOAD"):
-    os.environ["LD_PRELOAD"] = os.environ["_SCREENPAD_LD_PRELOAD"]
+if os.environ.get("_GLASSPAD_LD_PRELOAD"):
+    os.environ["LD_PRELOAD"] = os.environ["_GLASSPAD_LD_PRELOAD"]
 else:
     os.environ.pop("LD_PRELOAD", None)
-os.environ.pop("_SCREENPAD_LD_PRELOAD", None)
+os.environ.pop("_GLASSPAD_LD_PRELOAD", None)
 
-APP_ID = "io.github.kan0p.ScreenPad.Launcher"
-BUS = "io.github.kan0p.ScreenPad"
-RUTA = "/io/github/kan0p/ScreenPad"
+APP_ID = "io.github.kan0p.GlassPad.Launcher"
+BUS = "io.github.kan0p.GlassPad"
+RUTA = "/io/github/kan0p/GlassPad"
 
 XDG_CONFIG = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
 XDG_STATE = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
-CONFIG = os.path.join(XDG_CONFIG, "screenpad", "config.toml")
-INICIO = os.path.join(XDG_STATE, "screenpad", "inicio.json")
+CONFIG = os.path.join(XDG_CONFIG, "glasspad", "config.toml")
+INICIO = os.path.join(XDG_STATE, "glasspad", "inicio.json")
 # identificadores de las ventanas que estaban en el pad antes de salir del modo monitor
-VENTANAS_PAD = os.path.join(XDG_STATE, "screenpad", "ventanas-pad.json")
+VENTANAS_PAD = os.path.join(XDG_STATE, "glasspad", "ventanas-pad.json")
 CONECTOR = "/var/lib/screenpad/conector"     # lo deja "screenpad on"
 
 AQUI = os.path.dirname(os.path.realpath(__file__))
 # íconos instalados o, al probar desde el repositorio, los de al lado
-ICONOS = next((d for d in (os.environ.get("SCREENPAD_ICONS"),
-                           "/usr/local/share/screenpad/icons")
+ICONOS = next((d for d in (os.environ.get("GLASSPAD_ICONS"),
+                           "/usr/local/share/glasspad/icons")
                if d and os.path.isdir(d)),
               os.path.join(AQUI, "icons"))
-
-# apps del inicio si el usuario todavía no eligió: las primeras que estén instaladas
-INICIO_PREDETERMINADO = [
-    "screenpad:ventanas", "screenpad:numeros", "screenpad:atajos", "screenpad:calculadora",
-    "screenpad:calendario",
-    "firefox.desktop", "chromium.desktop", "com.system76.CosmicFiles.desktop",
-    "org.gnome.Nautilus.desktop", "com.system76.CosmicTerm.desktop",
-    "com.system76.CosmicEdit.desktop", "com.system76.CosmicSettings.desktop",
-    "org.gnome.Calculator.desktop",
-]
 
 CONFIG_PREDETERMINADA = {
     "pad_device": "GDX1515:00 27C6:01F4 Touchpad",
@@ -108,17 +98,19 @@ MESES = ("enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto
 
 # mosaicos propios del launcher: id -> (ícono en icons/tiles, nombre, página)
 UTILIDADES = {
-    "screenpad:numeros": ("number-key", "Number Key", "numeros"),
-    "screenpad:atajos": ("quick-key", "Quick Key", "atajos"),
-    "screenpad:calculadora": ("calculator", "Calculadora", "calculadora"),
-    "screenpad:calendario": ("calendar", "Calendario", "calendario"),
-    "screenpad:ventanas": ("app-navigator", "Ventanas", "ventanas"),
+    "glasspad:numeros": ("number-key", "Number Key", "numeros"),
+    "glasspad:atajos": ("quick-key", "Quick Key", "atajos"),
+    "glasspad:calculadora": ("calculator", "Calculadora", "calculadora"),
+    "glasspad:calendario": ("calendar", "Calendario", "calendario"),
+    "glasspad:ventanas": ("app-navigator", "Ventanas", "ventanas"),
 }
+# utilidades que se agregan solas al inicio la primera vez (Ventanas está en la barra)
+EN_INICIO = [u for u in UTILIDADES if u != "glasspad:ventanas"]
 
 # categorías de "Todas las apps": (clave, nombre, categorías freedesktop)
 CATEGORIAS = [
     ("todas", "Todas", set()),
-    ("screenpad", "ScreenPad", set()),
+    ("glasspad", "GlassPad", set()),
     ("internet", "Internet", {"Network", "WebBrowser", "Email", "Chat"}),
     ("oficina", "Oficina", {"Office"}),
     ("multimedia", "Multimedia", {"AudioVideo", "Audio", "Video", "Player"}),
@@ -147,7 +139,7 @@ ATAJOS = [
     ("Captura", "applets-screenshooter-symbolic", "Print"),
     ("Escape", "edit-clear-symbolic", "Escape"),
 ]
-SOCKET_NUMPAD = "/run/screenpad-numpad.sock"
+SOCKET_NUMPAD = "/run/glasspad-numpad.sock"
 TECLA_NUMPAD = {**{str(n): f"KP{n}" for n in range(10)}, ".": "KPDOT", "-": "KPMINUS"}
 KEYSYM_NUMPAD = {**{f"KP{n}": f"KP_{n}" for n in range(10)}, "KPDOT": "KP_Decimal",
                  "KPSLASH": "KP_Divide", "KPASTERISK": "KP_Multiply",
@@ -162,8 +154,8 @@ DECIMAL = locale.localeconv()["decimal_point"] or "."
 DEBUG = "--debug" in sys.argv
 
 CSS = b"""
-window.screenpad { background: #0b1424; color: #ffffff; }
-window.screenpad.invisible { background: transparent; }
+window.glasspad { background: #0b1424; color: #ffffff; }
+window.glasspad.invisible { background: transparent; }
 .fondo-predeterminado {
   background-color: #0b1424;
   background-image: radial-gradient(ellipse 60% 80% at 15% 20%, #2c5bb8 0%, transparent 60%),
@@ -302,7 +294,7 @@ scale.brillo slider { min-width: 54px; min-height: 54px; margin: -17px; border-r
 
 
 def log(*a):
-    print("screenpad-launcher:", *a, file=sys.stderr, flush=True)
+    print("glasspad-launcher:", *a, file=sys.stderr, flush=True)
 
 
 def log_una_vez(conjunto, clave, *a):
@@ -329,18 +321,22 @@ def leer_config():
 
 
 def leer_inicio():
-    """Ids del inicio en orden."""
-    ids = None
+    """Ids del inicio en orden. Las utilidades de EN_INICIO que nunca se ofrecieron se
+    agregan al final una sola vez."""
+    datos = {}
     try:
         with open(INICIO) as f:
-            ids = json.load(f)
+            datos = json.load(f)
     except (FileNotFoundError, ValueError, OSError):
         pass
-    if isinstance(ids, list):
-        ids = [i for i in ids if isinstance(i, str)]
-    else:
-        instaladas = {a.get_id() for a in Gio.AppInfo.get_all()}
-        ids = [i for i in INICIO_PREDETERMINADO if i in instaladas]
+    if not isinstance(datos, dict):
+        datos = {}
+    ids = [i for i in datos.get("inicio", []) if isinstance(i, str)]
+    ofrecidas = set(datos.get("ofrecidas", []))
+    nuevas = [u for u in EN_INICIO if u not in ofrecidas]
+    if nuevas:
+        ids += [u for u in nuevas if u not in ids]
+        guardar_inicio(ids, ofrecidas | set(nuevas))
     return ids
 
 
@@ -436,11 +432,17 @@ def guardar_ventanas_pad(ids):
     os.replace(tmp, VENTANAS_PAD)
 
 
-def guardar_inicio(ids):
+def guardar_inicio(ids, ofrecidas=None):
+    if ofrecidas is None:
+        try:
+            with open(INICIO) as f:
+                ofrecidas = set(json.load(f).get("ofrecidas", []))
+        except (FileNotFoundError, ValueError, OSError, AttributeError):
+            ofrecidas = set()
     os.makedirs(os.path.dirname(INICIO), exist_ok=True)
     tmp = INICIO + ".tmp"
     with open(tmp, "w") as f:
-        json.dump(ids, f)
+        json.dump({"inicio": ids, "ofrecidas": sorted(ofrecidas)}, f)
     os.replace(tmp, INICIO)
 
 
@@ -1220,9 +1222,9 @@ class Launcher(Gtk.Application):
 
     def _crear_ventana(self, salida):
         v = Gtk.ApplicationWindow(application=self)
-        v.add_css_class("screenpad")
+        v.add_css_class("glasspad")
         Capa.init_for_window(v)
-        Capa.set_namespace(v, "screenpad-launcher")
+        Capa.set_namespace(v, "glasspad-launcher")
         Capa.set_keyboard_mode(v, Capa.KeyboardMode.NONE)
         Capa.set_monitor(v, salida)
         debug(f"salida: {salida.get_connector()}")
@@ -1435,7 +1437,7 @@ class Launcher(Gtk.Application):
         for item_id, (icono, texto, pagina) in UTILIDADES.items():
             m = self._mosaico_svg(icono, texto, lambda p=pagina: self._ir(p),
                                   lambda i=item_id, t=texto: self._menu_item(i, t))
-            self.categorias_de[m.get_name()] = {"screenpad"}
+            self.categorias_de[m.get_name()] = {"glasspad"}
             self.lista_apps.append(m)
         for app in apps:
             m = self._mosaico_app(app, lambda a: self._menu_item(a.get_id(), a.get_display_name()))
@@ -1602,7 +1604,7 @@ class Launcher(Gtk.Application):
             log(f"wtype falló: {e.message}")
 
     def numpad(self, teclas):
-        """Teclas reales del teclado numérico por screenpad-numpad; sin él, wtype."""
+        """Teclas reales del teclado numérico por glasspad-numpad; sin él, wtype."""
         datos = "".join(t + "\n" for t in teclas).encode()
         for _ in range(2):
             if self.socket_numpad is None:
@@ -1656,7 +1658,7 @@ class Launcher(Gtk.Application):
         g = Gtk.Grid(column_spacing=18, row_spacing=18, column_homogeneous=True,
                      row_homogeneous=True, css_classes=["teclado", "numeros"])
         sep = DECIMAL
-        teclas = [  # (texto, tecla de screenpad-numpad, columna, fila, ancho, alto)
+        teclas = [  # (texto, tecla de glasspad-numpad, columna, fila, ancho, alto)
             ("÷", "KPSLASH", 0, 0, 1, 1), ("×", "KPASTERISK", 1, 0, 1, 1),
             ("−", "KPMINUS", 2, 0, 1, 1), ("⌫", "BACKSPACE", 3, 0, 1, 1),
             ("7", "KP7", 0, 1, 1, 1), ("8", "KP8", 1, 1, 1, 1), ("9", "KP9", 2, 1, 1, 1),
@@ -1793,7 +1795,6 @@ class Launcher(Gtk.Application):
 
         botones = Gtk.Grid(column_spacing=28, column_homogeneous=True)
         opciones = [
-            ("app-navigator", "Ventanas", lambda: self._abrir_utilidad("ventanas")),
             ("number-key", "Number Key", lambda: self._abrir_utilidad("numeros")),
             ("quick-key", "Quick Key", lambda: self._abrir_utilidad("atajos")),
             ("touchpad", "Touchpad", lambda: (self._cerrar_centro(), self._entrar_touchpad())),
@@ -1831,7 +1832,7 @@ class Launcher(Gtk.Application):
         self.velo_centro.set_visible(False)
 
     def _mostrar_brillo(self):
-        """Lee el brillo de screenpadd (la caché del proxy no se actualiza sola)."""
+        """Lee el brillo de glasspadd (la caché del proxy no se actualiza sola)."""
         nivel = self.brillo
         if self.servicio:
             try:
@@ -2735,8 +2736,8 @@ class Launcher(Gtk.Application):
             log(f"no se pudo abrir {app.get_id()}: {e.message}")
 
     def _abrir_config(self):
-        local = os.path.join(AQUI, "screenpad-config")
-        cmd = local if os.access(local, os.X_OK) else "screenpad-config"
+        local = os.path.join(AQUI, "glasspad-config")
+        cmd = local if os.access(local, os.X_OK) else "glasspad-config"
         try:
             Gio.Subprocess.new([cmd], Gio.SubprocessFlags.NONE)
         except GLib.Error as e:
@@ -2788,7 +2789,7 @@ class Launcher(Gtk.Application):
                 self._aplicar_fondo()
                 self._llenar_atajos()
 
-    # ----- screenpadd --------------------------------------------------------
+    # ----- glasspadd ---------------------------------------------------------
 
     def _conectar_servicio(self):
         Gio.bus_watch_name(Gio.BusType.SESSION, BUS, Gio.BusNameWatcherFlags.NONE,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# screenpad-config - configuración del ScreenPad en la pantalla principal
+# glasspad-config - GlassPad Configurator, en la pantalla principal
 # kan0p - https://github.com/kan0p/asus-screenpad-linux - GPL-3.0-or-later
 
 import os, sys, tomllib
@@ -10,11 +10,11 @@ gi.require_version("Gdk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
-APP_ID = "io.github.kan0p.ScreenPad.Config"
+APP_ID = "io.github.kan0p.GlassPad.Config"
 XDG_CONFIG = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-CONFIG = os.path.join(XDG_CONFIG, "screenpad", "config.toml")
+CONFIG = os.path.join(XDG_CONFIG, "glasspad", "config.toml")
 
-# los mismos valores por omisión que screenpad-launcher
+# los mismos valores por omisión que glasspad-launcher
 PREDETERMINADA = {
     "background_mode": "default",
     "background_color": "#1b2433",
@@ -25,7 +25,7 @@ PREDETERMINADA = {
 }
 
 
-# los mismos atajos por omisión que screenpad-launcher: [texto, ícono, combinación]
+# los mismos atajos por omisión que glasspad-launcher: [texto, ícono, combinación]
 ATAJOS = [
     ["Copiar", "edit-copy-symbolic", "ctrl+c"],
     ["Pegar", "edit-paste-symbolic", "ctrl+v"],
@@ -76,7 +76,7 @@ def leer():
     except FileNotFoundError:
         return {}
     except (tomllib.TOMLDecodeError, OSError) as e:
-        print(f"screenpad-config: config ilegible ({CONFIG}): {e}", file=sys.stderr)
+        print(f"glasspad-config: config ilegible ({CONFIG}): {e}", file=sys.stderr)
         return {}
 
 
@@ -94,7 +94,7 @@ def a_toml(valor):
 def guardar(conf):
     """Escribe solo claves simples (texto, números, booleanos y listas)."""
     os.makedirs(os.path.dirname(CONFIG), exist_ok=True)
-    lineas = ["# escrito por screenpad-config; se puede editar a mano"]
+    lineas = ["# escrito por glasspad-config; se puede editar a mano"]
     lineas += [f"{k} = {a_toml(v)}" for k, v in conf.items() if not isinstance(v, dict)]
     tmp = CONFIG + ".tmp"
     with open(tmp, "w") as f:
@@ -104,7 +104,7 @@ def guardar(conf):
 
 class Ventana(Adw.ApplicationWindow):
     def __init__(self, app):
-        super().__init__(application=app, title="ScreenPad", default_width=560,
+        super().__init__(application=app, title="GlassPad Configurator", default_width=560,
                          default_height=720)
         self.conf = leer()
         self.listo = False
@@ -259,7 +259,7 @@ class Ventana(Adw.ApplicationWindow):
         try:
             guardar(self.conf)
         except OSError as e:
-            print(f"screenpad-config: no se pudo guardar: {e}", file=sys.stderr)
+            print(f"glasspad-config: no se pudo guardar: {e}", file=sys.stderr)
 
     def _entero(self, clave):
         try:
@@ -284,7 +284,7 @@ class Ventana(Adw.ApplicationWindow):
         try:
             guardar(self.conf)
         except OSError as e:
-            print(f"screenpad-config: no se pudo guardar: {e}", file=sys.stderr)
+            print(f"glasspad-config: no se pudo guardar: {e}", file=sys.stderr)
 
     def _cambio_tipo(self, fila, _p):
         self._mostrar_filas()
