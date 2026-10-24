@@ -13,7 +13,8 @@ if LIB_LAYER not in os.environ.get("LD_PRELOAD", ""):
     os.environ["LD_PRELOAD"] = " ".join(filter(None, [LIB_LAYER, os.environ.get("LD_PRELOAD")]))
     os.execv(sys.executable, [sys.executable, *sys.argv])
 
-import ast, calendar, datetime, glob, json, locale, math, operator, re, shutil, signal
+import ast, calendar, datetime, glob, importlib.util, json, locale, math, operator, re
+import shutil, signal
 import socket, struct, subprocess, time, tomllib
 
 import evdev
@@ -69,6 +70,10 @@ COMPARTIDO = os.path.normpath(os.path.join(AQUI, os.pardir, "share", "glasspad")
 if not os.path.isdir(COMPARTIDO):
     COMPARTIDO = AQUI
 ICONOS = os.environ.get("GLASSPAD_ICONS") or os.path.join(COMPARTIDO, "icons")
+XDG_DATA = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+# el primero tiene prioridad si dos carpetas tienen el mismo nombre
+CARPETAS_COMPLEMENTOS = [os.path.join(XDG_DATA, "glasspad", "complementos"),
+                         os.path.join(COMPARTIDO, "complementos")]
 
 CONFIG_PREDETERMINADA = {
     "pad_device": "GDX1515:00 27C6:01F4 Touchpad",
@@ -132,6 +137,8 @@ POPUP_ANCHO, POPUP_ALTO = 480, 640
 ZOOM_PASOS_NORMAL = 12      # "alejar" repetido para volver al zoom normal
 MUSICA_OCULTAR_S = 600      # en pausa más que esto, el botón de música se oculta
 PAGINAS_UTILIDAD = {u[2] for u in UTILIDADES.values()}
+# complementos cargados: id -> (ruta o nombre del ícono, nombre, página, módulo)
+COMPLEMENTOS = {}
 
 ATAJOS_TOML = os.path.join(COMPARTIDO, "atajos.toml")
 SOCKET_NUMPAD = "/run/glasspad-numpad.sock"
@@ -503,6 +510,34 @@ def textura_difuminada(ruta, blur, ancho=1920, alto=1080):
     grande = chica.scale_simple(w, h, GdkPixbuf.InterpType.HYPER)
     formato = Gdk.MemoryFormat.R8G8B8A8 if grande.get_has_alpha() else Gdk.MemoryFormat.R8G8B8
     return Gdk.MemoryTexture.new(w, h, formato, grande.read_pixel_bytes(), grande.get_rowstride())
+
+
+def cargar_complementos():
+    """Carga cada <carpeta>/complemento.py; los que fallan se omiten."""
+    for base in CARPETAS_COMPLEMENTOS:
+        for carpeta in sorted(glob.glob(os.path.join(base, "*", "complemento.py"))):
+            carpeta = os.path.dirname(carpeta)
+            clave = os.path.basename(carpeta)
+            item_id = f"complemento:{clave}"
+            if item_id in COMPLEMENTOS:
+                continue
+            try:
+                spec = importlib.util.spec_from_file_location(
+                    f"glasspad_complemento_{clave}", os.path.join(carpeta, "complemento.py"))
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                nombre = str(mod.NOMBRE)
+                if not callable(mod.crear):
+                    raise TypeError("crear no es una función")
+            except Exception as e:
+                log(f"complemento {clave}: {type(e).__name__}: {e}")
+                continue
+            icono = getattr(mod, "ICONO", "icono.svg")
+            if os.path.isfile(os.path.join(carpeta, icono)):
+                icono = os.path.join(carpeta, icono)
+            COMPLEMENTOS[item_id] = (icono, nombre, item_id, mod)
+            PAGINAS_UTILIDAD.add(item_id)
+            debug(f"complemento {clave}: {carpeta}")
 
 
 def guardar_inicio(ids, ofrecidas=None):
@@ -1492,10 +1527,70 @@ class Marquesina(Gtk.ScrolledWindow):
         return True
 
 
+class Api:
+    """Lo que recibe crear(api) de un complemento."""
+
+    def __init__(self, launcher, carpeta):
+        self._l = launcher
+        self.carpeta = carpeta
+        self._al_mostrar = []
+
+    def accion(self, widget, al_tocar, al_mantener=None):
+        """Hace que el widget responda al toque en el pad. Devuelve el widget."""
+        return self._l._accion(widget, al_tocar, al_mantener)
+
+    def deslizable(self, widget, al_cambiar, al_soltar=None):
+        """al_cambiar(fracción de 0 a 1) mientras se arrastra el dedo en horizontal."""
+        self._l._deslizable(widget, al_cambiar, al_soltar)
+        return widget
+
+    def tecla(self, al_tocar, texto=None, icono=None, clases=()):
+        """Botón con el estilo de las teclas del launcher."""
+        return self._l._tecla(al_tocar, texto, icono, clases)
+
+    def vaciar(self, contenedor):
+        """Quita los hijos de un contenedor y sus acciones."""
+        self._l._vaciar(contenedor)
+
+    def css(self, texto):
+        prov = Gtk.CssProvider()
+        prov.load_from_data(texto.encode())
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), prov,
+                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 2)
+
+    def al_mostrar(self, funcion):
+        """funcion(visible) al entrar o salir de la página del complemento."""
+        self._al_mostrar.append(funcion)
+
+    def avisar(self, texto):
+        self._l._avisar(texto)
+
+    def escribir(self, texto):
+        """Escribe el texto en la ventana con foco."""
+        self._l.escribir(["--", texto])
+
+    def atajo(self, combinacion):
+        """Manda un atajo a la ventana con foco, por ejemplo "ctrl+shift+t"."""
+        self._l.escribir(combinacion_wtype(combinacion))
+
+    def abrir(self, app_id):
+        """Abre una app por su archivo .desktop, por ejemplo "org.gnome.Nautilus.desktop"."""
+        try:
+            app = DesktopAppInfo.new(app_id)
+        except TypeError:
+            app = None
+        if app:
+            self._l._abrir(app)
+
+    def inicio(self):
+        self._l._ir_inicio()
+
+
 class Launcher(Gtk.Application):
     def __init__(self):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
         self.conf = leer_config()
+        cargar_complementos()
         self.ventana = None
         self.acciones = {}          # nombre del widget -> (al tocar, al mantener)
         self.n_acciones = 0
@@ -1590,6 +1685,7 @@ class Launcher(Gtk.Application):
         # no homogéneo: cada página reserva solo su alto
         self.paginas = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE,
                                  vexpand=True, hhomogeneous=False, vhomogeneous=False)
+        self._paginas_complementos()
         self.paginas.add_named(self._pagina_inicio(), "inicio")
         self.paginas.add_named(self._pagina_apps(), "apps")
         self.paginas.add_named(self._pagina_numeros(), "numeros")
@@ -1636,6 +1732,46 @@ class Launcher(Gtk.Application):
         v.connect("realize", lambda _v: GLib.idle_add(lambda: self._aplicar_fondo() and False))
         v.present()
         self._musica_cambio()
+
+    def _paginas_complementos(self):
+        for item_id, (_i, _n, pagina, mod) in list(COMPLEMENTOS.items()):
+            api = Api(self, os.path.dirname(mod.__file__))
+            try:
+                widget = mod.crear(api)
+                if not isinstance(widget, Gtk.Widget):
+                    raise TypeError("crear no devolvió un Gtk.Widget")
+            except Exception as e:
+                log(f"{item_id}: {type(e).__name__}: {e}")
+                del COMPLEMENTOS[item_id]
+                continue
+            self.paginas.add_named(widget, pagina)
+            if getattr(mod, "EN_INICIO", True):
+                EN_INICIO.append(item_id)
+            if api._al_mostrar:
+                self.paginas.connect("notify::visible-child-name", self._mostrar_complemento,
+                                     pagina, api._al_mostrar, [False])
+
+    @staticmethod
+    def _mostrar_complemento(paginas, _p, pagina, funciones, antes):
+        visible = paginas.get_visible_child_name() == pagina
+        if visible == antes[0]:
+            return
+        antes[0] = visible
+        for f in funciones:
+            try:
+                f(visible)
+            except Exception as e:
+                log(f"{pagina}: {type(e).__name__}: {e}")
+
+    def _utilidad(self, item_id):
+        """(Gtk.Image, nombre, página) de una utilidad o un complemento."""
+        if item_id in UTILIDADES:
+            icono, texto, pagina = UTILIDADES[item_id]
+            return Gtk.Image.new_from_file(os.path.join(ICONOS, "tiles", icono + ".svg")), texto, pagina
+        icono, texto, pagina, _m = COMPLEMENTOS[item_id]
+        if os.path.isabs(icono):
+            return Gtk.Image.new_from_file(icono), texto, pagina
+        return Gtk.Image.new_from_icon_name(icono), texto, pagina
 
     def _achicar(self, si):
         """1x1, transparente y al fondo (fuera del launcher) o el pad entero arriba."""
@@ -1724,9 +1860,9 @@ class Launcher(Gtk.Application):
         mosaicos = []
         for item_id, app in self._items_inicio():
             if app is None:
-                icono, texto, pagina = UTILIDADES[item_id]
-                m = self._mosaico_svg(icono, texto, lambda p=pagina: self._ir(p),
-                                      lambda i=item_id: self._arrastrar_inicio(i, None))
+                img, texto, pagina = self._utilidad(item_id)
+                m = self._mosaico(img, texto, lambda p=pagina: self._ir(p),
+                                  lambda i=item_id: self._arrastrar_inicio(i, None))
             else:
                 m = self._mosaico_app(app, lambda a: self._arrastrar_inicio(a.get_id(), a))
             self.mosaico_id[m.get_name()] = item_id
@@ -1747,7 +1883,7 @@ class Launcher(Gtk.Application):
         """(id, app) de lo que se muestra en el inicio; app es None en las utilidades."""
         items = []
         for item_id in self.orden if self.orden is not None else leer_inicio():
-            if item_id in UTILIDADES:
+            if item_id in UTILIDADES or item_id in COMPLEMENTOS:
                 items.append((item_id, None))
                 continue
             try:
@@ -1790,10 +1926,6 @@ class Launcher(Gtk.Application):
         return self._mosaico(img, app.get_display_name(), lambda: self._abrir(app),
                              lambda: al_mantener(app))
 
-    def _mosaico_svg(self, nombre, texto, al_tocar, al_mantener=None):
-        img = Gtk.Image.new_from_file(os.path.join(ICONOS, "tiles", nombre + ".svg"))
-        return self._mosaico(img, texto, al_tocar, al_mantener)
-
     def _mosaico(self, img, texto, al_tocar, al_mantener=None):
         img.add_css_class("icono")
         caja = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=19)
@@ -1828,9 +1960,10 @@ class Launcher(Gtk.Application):
         apps = sorted((a for a in Gio.AppInfo.get_all() if a.should_show()),
                       key=lambda a: a.get_display_name().casefold())
         self.categorias_de.clear()
-        for item_id, (icono, texto, pagina) in UTILIDADES.items():
-            m = self._mosaico_svg(icono, texto, lambda p=pagina: self._ir(p),
-                                  lambda i=item_id, t=texto: self._menu_item(i, t))
+        for item_id in [*UTILIDADES, *COMPLEMENTOS]:
+            img, texto, pagina = self._utilidad(item_id)
+            m = self._mosaico(img, texto, lambda p=pagina: self._ir(p),
+                              lambda i=item_id, t=texto: self._menu_item(i, t))
             self.categorias_de[m.get_name()] = {"glasspad"}
             self.lista_apps.append(m)
         for app in apps:
@@ -1912,8 +2045,7 @@ class Launcher(Gtk.Application):
         self.orden = [i for i, _ in self._items_inicio()]
         self.arrastrada = item_id
         if app is None:
-            self.flotante = Gtk.Image.new_from_file(
-                os.path.join(ICONOS, "tiles", UTILIDADES[item_id][0] + ".svg"))
+            self.flotante = self._utilidad(item_id)[0]
         else:
             self.flotante = Gtk.Image.new_from_gicon(
                 app.get_icon() or Gio.ThemedIcon.new("application-x-executable"))
