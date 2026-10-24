@@ -1,3 +1,7 @@
-# órdenes de screenpad sin contraseña para glasspadd (sin dump-edid, que escribe
-# archivos como root). install.sh reemplaza USUARIO.
-USUARIO ALL=(root) NOPASSWD: /usr/local/bin/screenpad on, /usr/local/bin/screenpad replug, /usr/local/bin/screenpad replug [0-9]*, /usr/local/bin/screenpad off, /usr/local/bin/screenpad status, /usr/local/bin/screenpad brightness, /usr/local/bin/screenpad brightness [0-9]*
+# Órdenes de screenpad sin contraseña para glasspadd (sin dump-edid, que escribe archivos
+# como root). install.sh reemplaza @BINDIR@; en una instalación manual agrega una línea para
+# el usuario, que funciona sin volver a iniciar sesión.
+Cmnd_Alias GLASSPAD_SCREENPAD = @BINDIR@/screenpad on, @BINDIR@/screenpad replug, \
+    @BINDIR@/screenpad replug [0-9]*, @BINDIR@/screenpad off, @BINDIR@/screenpad status, \
+    @BINDIR@/screenpad brightness, @BINDIR@/screenpad brightness [0-9]*
+%glasspad ALL=(root) NOPASSWD: GLASSPAD_SCREENPAD

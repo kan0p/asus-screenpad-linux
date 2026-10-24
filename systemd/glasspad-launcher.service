@@ -6,7 +6,7 @@ After=graphical-session.target glasspadd.service
 StartLimitIntervalSec=0
 
 [Service]
-ExecStart=/usr/local/bin/glasspad-launcher
+ExecStart=@BINDIR@/glasspad-launcher
 Restart=always
 RestartSec=1
 

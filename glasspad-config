@@ -50,8 +50,11 @@ MODO_BATERIA = [("", "No cambiar"), *MODOS]
 
 
 AQUI = os.path.dirname(os.path.realpath(__file__))
-ATAJOS_TOML = next((r for r in ("/usr/local/share/glasspad/atajos.toml",)
-                    if os.path.isfile(r)), os.path.join(AQUI, "atajos.toml"))
+# datos junto al prefijo de instalación (bin/../share/glasspad) o, desde el repositorio, al lado
+COMPARTIDO = os.path.normpath(os.path.join(AQUI, os.pardir, "share", "glasspad"))
+if not os.path.isdir(COMPARTIDO):
+    COMPARTIDO = AQUI
+ATAJOS_TOML = os.path.join(COMPARTIDO, "atajos.toml")
 MAX_ATAJOS = 16
 ICONOS_ATAJO = [
     "edit-copy-symbolic", "edit-paste-symbolic", "edit-cut-symbolic", "edit-undo-symbolic",

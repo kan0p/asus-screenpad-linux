@@ -28,7 +28,8 @@ ICONOS = {"launcher": "view-app-grid-symbolic", "monitor": "video-display-symbol
 BUS = "io.github.kan0p.GlassPad"
 RUTA = "/io/github/kan0p/GlassPad"
 BUS_LAUNCHER = "io.github.kan0p.GlassPad.Launcher"
-SCREENPAD = os.environ.get("SCREENPAD_BIN", "/usr/local/bin/screenpad")
+SCREENPAD = os.environ.get("SCREENPAD_BIN") or os.path.join(
+    os.path.dirname(os.path.realpath(__file__)), "screenpad")
 # Para pruebas sin hardware: SCREENPAD_BIN=un-falso SCREENPAD_SIN_SUDO=1
 SUDO = [] if os.environ.get("SCREENPAD_SIN_SUDO") else ["sudo", "-n"]
 

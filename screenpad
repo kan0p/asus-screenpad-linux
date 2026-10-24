@@ -6,7 +6,7 @@
 
 set -u
 
-LIBDIR=${SCREENPAD_LIBDIR:-/usr/local/lib/screenpad}
+LIBDIR=${SCREENPAD_LIBDIR:-$(dirname "$(readlink -f "$0")")/../lib/screenpad}
 STATEDIR=/var/lib/screenpad
 CONF=/etc/screenpad.conf
 DEVID=00050031          # ASUS_WMI_DEVID_SCREENPAD_POWER

@@ -6,7 +6,7 @@ Before=display-manager.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/screenpad on
+ExecStart=@BINDIR@/screenpad on
 RemainAfterExit=yes
 Restart=on-failure
 RestartSec=5

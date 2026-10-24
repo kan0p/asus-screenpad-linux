@@ -64,11 +64,11 @@ VENTANAS_PAD = os.path.join(XDG_STATE, "glasspad", "ventanas-pad.json")
 CONECTOR = "/var/lib/screenpad/conector"     # lo deja "screenpad on"
 
 AQUI = os.path.dirname(os.path.realpath(__file__))
-# íconos instalados o, al probar desde el repositorio, los de al lado
-ICONOS = next((d for d in (os.environ.get("GLASSPAD_ICONS"),
-                           "/usr/local/share/glasspad/icons")
-               if d and os.path.isdir(d)),
-              os.path.join(AQUI, "icons"))
+# datos junto al prefijo de instalación (bin/../share/glasspad) o, desde el repositorio, al lado
+COMPARTIDO = os.path.normpath(os.path.join(AQUI, os.pardir, "share", "glasspad"))
+if not os.path.isdir(COMPARTIDO):
+    COMPARTIDO = AQUI
+ICONOS = os.environ.get("GLASSPAD_ICONS") or os.path.join(COMPARTIDO, "icons")
 
 CONFIG_PREDETERMINADA = {
     "pad_device": "GDX1515:00 27C6:01F4 Touchpad",
@@ -133,9 +133,7 @@ ZOOM_PASOS_NORMAL = 12      # "alejar" repetido para volver al zoom normal
 MUSICA_OCULTAR_S = 600      # en pausa más que esto, el botón de música se oculta
 PAGINAS_UTILIDAD = {u[2] for u in UTILIDADES.values()}
 
-# perfiles de Quick Key instalados o, al probar desde el repositorio, los de al lado
-ATAJOS_TOML = next((r for r in ("/usr/local/share/glasspad/atajos.toml",)
-                    if os.path.isfile(r)), os.path.join(AQUI, "atajos.toml"))
+ATAJOS_TOML = os.path.join(COMPARTIDO, "atajos.toml")
 SOCKET_NUMPAD = "/run/glasspad-numpad.sock"
 TECLA_NUMPAD = {**{str(n): f"KP{n}" for n in range(10)}, ".": "KPDOT", "-": "KPMINUS"}
 KEYSYM_NUMPAD = {**{f"KP{n}": f"KP_{n}" for n in range(10)}, "KPDOT": "KP_Decimal",

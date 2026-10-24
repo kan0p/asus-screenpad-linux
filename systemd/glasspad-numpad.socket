@@ -3,9 +3,9 @@ Description=GlassPad: socket del teclado numérico virtual
 
 [Socket]
 ListenStream=/run/glasspad-numpad.sock
-# install.sh reemplaza USUARIO: solo ese usuario puede pedir teclas
-SocketUser=USUARIO
-SocketMode=0600
+# solo el grupo glasspad puede pedir teclas
+SocketGroup=glasspad
+SocketMode=0660
 
 [Install]
 WantedBy=sockets.target
