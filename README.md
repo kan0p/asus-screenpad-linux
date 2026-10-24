@@ -2,6 +2,8 @@
 
 **GlassPad** hace que el ScreenPad de la ZenBook Pro 15 UX580 (UX580GE/GD) funcione en Linux con el driver propietario de NVIDIA: encendido, modos con Fn+F6 y **GlassPad Launcher**, un launcher táctil al estilo de ScreenXpert. Lo uso en Arch con COSMIC (Wayland).
 
+![GlassPad Launcher en el ScreenPad](capturas/inicio.jpg)
+
 GlassPad es un proyecto independiente, sin relación con ASUS. El repositorio se llama `asus-screenpad-linux` para que sea fácil de encontrar.
 
 ## Qué pasaba
@@ -46,6 +48,8 @@ cd asus-screenpad-linux
 sudo ./install.sh
 ```
 
+El instalador revisa las dependencias y, si falta alguna, ofrece instalarla con pacman, apt o dnf (`--si` las instala sin preguntar). Para empaquetar, `./install.sh --paquete DESTDIR` copia todo en `DESTDIR` con prefijo `/usr`, sin tocar el sistema; el grupo `glasspad` se crea con `sysusers.d`.
+
 Falta acomodar la pantalla. El panel es vertical, así que hay que rotarlo 270° y ponerlo debajo de la pantalla principal. Yo lo hago así en COSMIC:
 
 ```sh
@@ -58,7 +62,7 @@ En X11 sería algo así (los nombres de salida cambian, revísalos con `xrandr`)
 xrandr --output HDMI-0 --mode 1080x1920 --rotate right --below eDP-1
 ```
 
-Para quitarlo: `sudo ./uninstall.sh`.
+Para quitarlo: `sudo ./uninstall.sh`. La configuración de cada usuario queda en `~/.config/glasspad` y `~/.local/state/glasspad`.
 
 ## Modos y Fn+F6
 
@@ -100,6 +104,12 @@ El brillo se maneja por WMI y no por `/sys/class/backlight`. En 0 apaga solo la 
 - **Deslizar de lado** cambia de página.
 - **Todas las apps**, el botón central de la barra, lista las utilidades y todo lo instalado, con filtros por categoría. Mantener presionado un elemento lo agrega al inicio o lo quita.
 - **Cuatro dedos** (un toque corto) entran a un touchpad temporal: el fondo difuminado con la estela de los dedos y el pad libre para mover el cursor. Se vuelve con cuatro dedos o tras unos segundos sin tocar.
+
+| | | |
+|:-:|:-:|:-:|
+| ![Control Center](capturas/control-center.jpg) Control Center | ![Todas las apps](capturas/todas-las-apps.jpg) Todas las apps | ![Música](capturas/musica.jpg) Música |
+| ![Number Key](capturas/number-key.jpg) Number Key | ![Calculadora](capturas/calculadora.jpg) Calculadora | ![Temporizador](capturas/temporizador.jpg) Temporizador |
+| ![Monitor](capturas/monitor.jpg) Monitor | ![Portapapeles](capturas/portapapeles.jpg) Portapapeles | |
 
 ### Control Center y utilidades
 
@@ -227,11 +237,12 @@ glasspad clipboard       muestra el historial del portapapeles (lo que hace Supe
 - `glasspad-numpad`: teclado numérico virtual de Number Key (root, `python-evdev`)
 - `icons/`: mosaicos e íconos de interfaz del launcher
 - `atajos.toml`: perfiles de Quick Key por tipo de app
-- `systemd/`: `screenpad.service` y `glasspad-numpad.socket`/`.service` (sistema), `glasspadd.service` y `glasspad-launcher.service` (sesión)
+- `systemd/`: `screenpad.service` y `glasspad-numpad.socket`/`.service` (sistema), `glasspadd.service` y `glasspad-launcher.service` (sesión), `glasspad.sysusers` (grupo `glasspad`)
 - `udev/`, `sudoers/`: permisos y el cambio de Fn+F6 a `KEY_MACRO1`
 - `install.sh`, `uninstall.sh`
 - `edid/ux580-tsb-original.bin`: el EDID tal como sale del puente, con el checksum malo
 - `edid/ux580-tsb-fixed.bin`: el mismo, corregido
+- `capturas/`: capturas del launcher para este README
 
 ## Probado en
 
