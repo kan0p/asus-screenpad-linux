@@ -10,7 +10,7 @@ depends=('python' 'python-evdev' 'python-gobject' 'gtk4' 'gtk4-layer-shell' 'lib
          'acpi_call' 'NVIDIA-MODULE' 'polkit' 'wtype' 'playerctl' 'wireplumber')
 install=glasspad.install
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('32ee7252a1151b5a86c781d14207cf11c8d2cc66744dad7443a60e149e3448b4')
 
 package() {
     cd "asus-screenpad-linux-$pkgver"
