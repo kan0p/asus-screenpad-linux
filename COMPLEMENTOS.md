@@ -1,5 +1,7 @@
 # Complementos de GlassPad Launcher
 
+Referencia para GlassPad 0.9.1 o posterior.
+
 Un complemento es una página más del launcher, con su mosaico en el inicio y en *Todas las apps* (categoría GlassPad), igual que Calculadora o Temporizador. Se escribe en Python con GTK4 y vive fuera del código del launcher.
 
 ## Dónde van
@@ -60,12 +62,6 @@ Si se reemplazan widgets registrados, hay que quitarlos con `api.vaciar(contened
 
 El código corre dentro del launcher: nada debe bloquear (`GLib.timeout_add` o `Gio` asíncrono en lugar de `time.sleep` o lecturas lentas). La pantalla mide 1920×1080 una vez rotada.
 
-## Ejemplo
+## Ejemplos
 
-`dados/` tira dos dados al tocar y escribe el total con un toque largo:
-
-```sh
-mkdir -p ~/.local/share/glasspad/complementos
-cp -r dados ~/.local/share/glasspad/complementos/
-systemctl --user restart glasspad-launcher
-```
+El tutorial paso a paso y complementos de ejemplo, como Dados, están en [glasspad-complementos](https://github.com/kan0p/glasspad-complementos).

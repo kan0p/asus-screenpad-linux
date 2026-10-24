@@ -129,7 +129,7 @@ El **Control Center** sube desde la barra: brillo del pad (se arrastra con el de
 
 Son mosaicos que se pueden poner en el inicio; al instalar (o al llegar una nueva) aparecen solos, salvo Ventanas, que está en la barra.
 
-También se pueden agregar utilidades propias como complementos en Python, sin tocar el launcher: ver [ejemplos/complementos](ejemplos/complementos/README.md).
+También se pueden agregar utilidades propias como complementos en Python, sin tocar el launcher: la referencia está en [COMPLEMENTOS.md](COMPLEMENTOS.md), y el tutorial y los ejemplos, en [glasspad-complementos](https://github.com/kan0p/glasspad-complementos).
 
 Las ventanas que están en el pad pasan solas a la pantalla principal al salir del modo `monitor` (launcher, dark u off) y regresan al volver. Ventanas usa los protocolos de COSMIC (`ext_foreign_toplevel_list_v1`, `zcosmic_toplevel_info_v1`, `zcosmic_toplevel_manager_v1` y `ext_workspace_manager_v1`) con un cliente Wayland propio, sin dependencias.
 
@@ -247,7 +247,7 @@ glasspad clipboard       muestra el historial del portapapeles (lo que hace Supe
 - `edid/ux580-tsb-original.bin`: el EDID tal como sale del puente, con el checksum malo
 - `edid/ux580-tsb-fixed.bin`: el mismo, corregido
 - `capturas/`: capturas del launcher para este README
-- `ejemplos/complementos/`: guía para crear complementos y un ejemplo (Dados)
+- `COMPLEMENTOS.md`: referencia para crear complementos del launcher
 
 ## Probado en
 
