@@ -38,21 +38,9 @@ INICIO_SESION = [("last", "El último usado"), *MODOS]
 MODO_BATERIA = [("", "No cambiar"), *MODOS]
 
 
-# los mismos atajos por omisión que glasspad-launcher: [texto, ícono, combinación]
-ATAJOS = [
-    ["Copiar", "edit-copy-symbolic", "ctrl+c"],
-    ["Pegar", "edit-paste-symbolic", "ctrl+v"],
-    ["Cortar", "edit-cut-symbolic", "ctrl+x"],
-    ["Deshacer", "edit-undo-symbolic", "ctrl+z"],
-    ["Rehacer", "edit-redo-symbolic", "ctrl+shift+z"],
-    ["Seleccionar todo", "edit-select-all-symbolic", "ctrl+a"],
-    ["Guardar", "document-save-symbolic", "ctrl+s"],
-    ["Buscar", "edit-find-symbolic", "ctrl+f"],
-    ["Nueva pestaña", "tab-new-symbolic", "ctrl+t"],
-    ["Cerrar pestaña", "window-close-symbolic", "ctrl+w"],
-    ["Captura", "applets-screenshooter-symbolic", "Print"],
-    ["Escape", "edit-clear-symbolic", "Escape"],
-]
+AQUI = os.path.dirname(os.path.realpath(__file__))
+ATAJOS_TOML = next((r for r in ("/usr/local/share/glasspad/atajos.toml",)
+                    if os.path.isfile(r)), os.path.join(AQUI, "atajos.toml"))
 MAX_ATAJOS = 16
 ICONOS_ATAJO = [
     "edit-copy-symbolic", "edit-paste-symbolic", "edit-cut-symbolic", "edit-undo-symbolic",
@@ -74,6 +62,21 @@ TECLAS_MODIFICADORAS = {
 
 TIPOS = ("default", "color", "image")
 TIPOS_NOMBRE = {"default": "Predeterminado", "color": "Color", "image": "Imagen"}
+
+
+def leer_perfiles():
+    try:
+        with open(ATAJOS_TOML, "rb") as f:
+            return tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        print(f"glasspad-config: sin perfiles de Quick Key ({ATAJOS_TOML}): {e}", file=sys.stderr)
+        return {"general": {"nombre": "Generales", "atajos": []}}
+
+
+def clave_app(app):
+    """El app_id con que una app aparece como ventana: StartupWMClass o el id del .desktop."""
+    clase = app.get_startup_wm_class() if hasattr(app, "get_startup_wm_class") else None
+    return clase or (app.get_id() or "").removesuffix(".desktop")
 
 
 def combinacion_legible(texto):
@@ -105,10 +108,18 @@ def a_toml(valor):
 
 
 def guardar(conf):
-    """Escribe solo claves simples (texto, números, booleanos y listas)."""
+    """Escribe claves simples (texto, números, booleanos y listas) y tablas de un nivel
+    con subtablas, como [quick_key_apps."brave-browser"]."""
     os.makedirs(os.path.dirname(CONFIG), exist_ok=True)
     lineas = ["# escrito por glasspad-config; se puede editar a mano"]
     lineas += [f"{k} = {a_toml(v)}" for k, v in conf.items() if not isinstance(v, dict)]
+    for k, tabla in conf.items():
+        if not isinstance(tabla, dict):
+            continue
+        for sub, valores in tabla.items():
+            if isinstance(valores, dict):
+                lineas.append(f"\n[{k}.{a_toml(sub)}]")
+                lineas += [f"{kk} = {a_toml(vv)}" for kk, vv in valores.items()]
     tmp = CONFIG + ".tmp"
     with open(tmp, "w") as f:
         f.write("\n".join(lineas) + "\n")
@@ -129,7 +140,8 @@ class Ventana(Adw.ApplicationWindow):
                 ("screenpad", "ScreenPad", "input-touchpad-symbolic",
                  (self._grupo_modos, self._grupo_atenuar, self._grupo_bateria,
                   self._grupo_touchpad)),
-                ("quickkey", "Quick Key", "input-keyboard-symbolic", (self._grupo_atajos,))):
+                ("quickkey", "Quick Key", "input-keyboard-symbolic",
+                 (self._grupo_perfil, self._grupo_atajos))):
             pagina = Adw.PreferencesPage()
             for grupo in grupos:
                 pagina.add(grupo())
@@ -276,20 +288,89 @@ class Ventana(Adw.ApplicationWindow):
 
     # ----- Quick Key ---------------------------------------------------------
 
+    def _grupo_perfil(self):
+        self.perfiles = leer_perfiles()
+        g = Adw.PreferencesGroup(
+            title="Perfil",
+            description="Quick Key muestra los atajos de la app activa; si no tiene, los generales.")
+        self.claves_perfil = [""]
+        nombres = ["Generales"]
+        conocidas = {a.lower() for p in self.perfiles.values() for a in p.get("apps", [])}
+        propias = set(self._propios())
+        for app in sorted(Gio.AppInfo.get_all(), key=lambda a: a.get_display_name().casefold()):
+            if not app.should_show():
+                continue
+            clave = self._clave_conocida(app, conocidas | {k.lower() for k in propias})
+            if clave and clave not in self.claves_perfil:
+                self.claves_perfil.append(clave)
+                nombres.append(app.get_display_name())
+        self.selector = Adw.ComboRow(title="Atajos para", model=Gtk.StringList.new(nombres))
+        self.selector.connect("notify::selected", lambda f, _p: self._ver_perfil(
+            self.claves_perfil[f.get_selected()]))
+        g.add(self.selector)
+        otra = Adw.ButtonRow(title="Otra app…", start_icon_name="list-add-symbolic")
+        otra.connect("activated", lambda _f: DialogoApp(self._app_elegida).present(self))
+        g.add(otra)
+        return g
+
+    def _clave_conocida(self, app, conocidas):
+        """La clave de perfil de una app instalada si alguna de sus variantes es conocida."""
+        posibles = [clave_app(app), (app.get_id() or "").removesuffix(".desktop")]
+        for p in posibles:
+            for c in self.perfiles.values():
+                for a in c.get("apps", []):
+                    if a.lower() == p.lower():
+                        return a
+            for k in self._propios():
+                if k.lower() == p.lower():
+                    return k
+        return None
+
+    def _propios(self):
+        propios = self.conf.get("quick_key_apps")
+        return propios if isinstance(propios, dict) else {}
+
+    def _app_elegida(self, app):
+        clave = self._clave_conocida(app, set()) or clave_app(app)
+        if clave not in self.claves_perfil:
+            self.claves_perfil.append(clave)
+            self.selector.get_model().append(app.get_display_name())
+        self.selector.set_selected(self.claves_perfil.index(clave))
+
     def _grupo_atajos(self):
-        self.grupo_atajos = Adw.PreferencesGroup(
-            title="Quick Key",
-            description=f"Atajos que se envían a la app activa; hasta {MAX_ATAJOS}.")
+        self.grupo_atajos = Adw.PreferencesGroup(title="Atajos")
         restablecer = Gtk.Button(label="Restablecer", valign=Gtk.Align.CENTER,
                                  css_classes=["flat"])
         restablecer.connect("clicked", lambda _b: self._guardar_atajos(None))
         self.grupo_atajos.set_header_suffix(restablecer)
-        atajos = self.conf.get("quick_keys")
-        self.atajos = [list(a) for a in atajos] if isinstance(atajos, list) and atajos else \
-            [list(a) for a in ATAJOS]
         self.filas_atajos = []
-        self._llenar_atajos()
+        self._ver_perfil("")
         return self.grupo_atajos
+
+    def _origen(self, clave):
+        """(atajos, descripción) del perfil: propio, predeterminado por tipo o generales."""
+        if clave:
+            propio = self._propios().get(clave)
+            if isinstance(propio, dict) and propio.get("atajos"):
+                return propio["atajos"], "Perfil propio de esta app."
+            for p in self.perfiles.values():
+                if clave.lower() in (a.lower() for a in p.get("apps", [])):
+                    return p["atajos"], f"Predeterminados de {p['nombre']}; al editarlos se crea un perfil propio."
+            return self._generales(), "Usa los generales; al editarlos se crea un perfil propio."
+        return self._generales(), f"Para cualquier app sin perfil; hasta {MAX_ATAJOS}."
+
+    def _generales(self):
+        propios = self.conf.get("quick_keys")
+        if isinstance(propios, list) and propios:
+            return propios
+        return self.perfiles.get("general", {}).get("atajos", [])
+
+    def _ver_perfil(self, clave):
+        self.perfil = clave
+        atajos, descripcion = self._origen(clave)
+        self.atajos = [list(a) for a in atajos]
+        self.grupo_atajos.set_description(descripcion)
+        self._llenar_atajos()
 
     def _llenar_atajos(self):
         for fila in self.filas_atajos:
@@ -317,14 +398,23 @@ class Ventana(Adw.ApplicationWindow):
             self.filas_atajos.append(agregar)
 
     def _guardar_atajos(self, atajos):
-        """None vuelve a los atajos por omisión."""
-        self.atajos = [list(a) for a in (atajos if atajos is not None else ATAJOS)]
-        if atajos is None:
+        """None vuelve al perfil predeterminado (sin el propio)."""
+        if self.perfil:
+            propios = dict(self._propios())
+            if atajos is None:
+                propios.pop(self.perfil, None)
+            else:
+                propios[self.perfil] = {"atajos": [list(a) for a in atajos]}
+            self.conf["quick_key_apps"] = propios
+            if not propios:
+                self.conf.pop("quick_key_apps")
+            self._poner_todo()
+        elif atajos is None:
             self.conf.pop("quick_keys", None)
             self._poner_todo()
         else:
-            self._poner("quick_keys", self.atajos)
-        self._llenar_atajos()
+            self._poner("quick_keys", [list(a) for a in atajos])
+        self._ver_perfil(self.perfil)
 
     def _mover_atajo(self, i, paso):
         a = list(self.atajos)
@@ -411,6 +501,8 @@ class DialogoAtajo(Adw.Dialog):
         super().__init__(title="Atajo", content_width=460)
         texto, icono, combinacion = atajo
         self.al_guardar = al_guardar
+        if icono and icono not in ICONOS_ATAJO:
+            ICONOS_ATAJO.append(icono)
         self.icono = icono if icono in ICONOS_ATAJO else ICONOS_ATAJO[0]
         self.combinacion = combinacion
         self.grabando = False
@@ -496,6 +588,47 @@ class DialogoAtajo(Adw.Dialog):
 
     def _guardar(self, _b):
         self.al_guardar([self.nombre.get_text().strip(), self.icono, self.combinacion])
+        self.close()
+
+
+class DialogoApp(Adw.Dialog):
+    """Lista buscable de apps instaladas para crear un perfil de Quick Key."""
+
+    def __init__(self, al_elegir):
+        super().__init__(title="Elegir app", content_width=440, content_height=560)
+        self.al_elegir = al_elegir
+        self.busqueda = Gtk.SearchEntry(placeholder_text="Buscar app", margin_start=12,
+                                        margin_end=12, margin_top=6, margin_bottom=6)
+        self.lista = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE,
+                                 css_classes=["boxed-list"], margin_start=12, margin_end=12,
+                                 margin_bottom=12)
+        self.apps = sorted((a for a in Gio.AppInfo.get_all() if a.should_show()),
+                           key=lambda a: a.get_display_name().casefold())
+        for app in self.apps:
+            fila = Adw.ActionRow(title=app.get_display_name(), activatable=True)
+            icono = Gtk.Image.new_from_gicon(app.get_icon() or Gio.ThemedIcon.new(
+                "application-x-executable"))
+            icono.set_pixel_size(32)
+            fila.add_prefix(icono)
+            fila.connect("activated", lambda _f, a=app: self._elegir(a))
+            self.lista.append(fila)
+        self.lista.set_filter_func(self._filtro)
+        self.busqueda.connect("search-changed", lambda _b: self.lista.invalidate_filter())
+        caja = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        caja.append(self.busqueda)
+        caja.append(Gtk.ScrolledWindow(child=self.lista, vexpand=True,
+                                       hscrollbar_policy=Gtk.PolicyType.NEVER))
+        vista = Adw.ToolbarView(content=caja)
+        vista.add_top_bar(Adw.HeaderBar())
+        self.set_child(vista)
+
+    def _filtro(self, fila):
+        texto = self.busqueda.get_text().casefold()
+        return not texto or texto in fila.get_child().get_title().casefold() \
+            if hasattr(fila.get_child(), "get_title") else True
+
+    def _elegir(self, app):
+        self.al_elegir(app)
         self.close()
 
 

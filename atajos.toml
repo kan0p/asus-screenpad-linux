@@ -1,0 +1,97 @@
+# Atajos de Quick Key: [texto, ícono, combinación]. "apps" son los app_id de las ventanas.
+# Los perfiles propios se guardan en ~/.config/glasspad/config.toml.
+
+[general]
+nombre = "Generales"
+atajos = [
+    ["Copiar", "edit-copy-symbolic", "ctrl+c"],
+    ["Pegar", "edit-paste-symbolic", "ctrl+v"],
+    ["Cortar", "edit-cut-symbolic", "ctrl+x"],
+    ["Deshacer", "edit-undo-symbolic", "ctrl+z"],
+    ["Rehacer", "edit-redo-symbolic", "ctrl+shift+z"],
+    ["Seleccionar todo", "edit-select-all-symbolic", "ctrl+a"],
+    ["Guardar", "document-save-symbolic", "ctrl+s"],
+    ["Buscar", "edit-find-symbolic", "ctrl+f"],
+    ["Nueva pestaña", "tab-new-symbolic", "ctrl+t"],
+    ["Cerrar pestaña", "window-close-symbolic", "ctrl+w"],
+    ["Captura", "applets-screenshooter-symbolic", "Print"],
+    ["Escape", "edit-clear-symbolic", "Escape"],
+]
+
+[navegador]
+nombre = "Navegador"
+apps = ["brave-browser", "firefox", "org.mozilla.firefox", "chromium", "org.chromium.Chromium",
+        "google-chrome", "microsoft-edge", "vivaldi-stable", "librewolf", "io.gitlab.librewolf-community",
+        "opera", "zen", "app.zen_browser.zen", "epiphany", "org.gnome.Epiphany"]
+atajos = [
+    ["Nueva pestaña", "tab-new-symbolic", "ctrl+t"],
+    ["Cerrar pestaña", "window-close-symbolic", "ctrl+w"],
+    ["Reabrir pestaña", "edit-undo-symbolic", "ctrl+shift+t"],
+    ["Pestaña anterior", "go-previous-symbolic", "ctrl+Page_Up"],
+    ["Pestaña siguiente", "go-next-symbolic", "ctrl+Page_Down"],
+    ["Recargar", "view-refresh-symbolic", "ctrl+r"],
+    ["Atrás", "go-previous-symbolic", "alt+Left"],
+    ["Adelante", "go-next-symbolic", "alt+Right"],
+    ["Dirección", "go-jump-symbolic", "ctrl+l"],
+    ["Buscar", "edit-find-symbolic", "ctrl+f"],
+    ["Copiar", "edit-copy-symbolic", "ctrl+c"],
+    ["Pantalla completa", "view-fullscreen-symbolic", "F11"],
+]
+
+[terminal]
+nombre = "Terminal"
+apps = ["com.system76.CosmicTerm", "org.gnome.Console", "org.gnome.Terminal",
+        "gnome-terminal-server", "org.kde.konsole", "konsole", "kitty", "Alacritty", "foot",
+        "org.wezfurlong.wezterm", "com.mitchellh.ghostty", "xterm", "terminator", "tilix"]
+atajos = [
+    ["Copiar", "edit-copy-symbolic", "ctrl+shift+c"],
+    ["Pegar", "edit-paste-symbolic", "ctrl+shift+v"],
+    ["Nueva pestaña", "tab-new-symbolic", "ctrl+shift+t"],
+    ["Cerrar pestaña", "window-close-symbolic", "ctrl+shift+w"],
+    ["Pestaña anterior", "go-previous-symbolic", "ctrl+Page_Up"],
+    ["Pestaña siguiente", "go-next-symbolic", "ctrl+Page_Down"],
+    ["Interrumpir", "process-stop-symbolic", "ctrl+c"],
+    ["Fin de entrada", "media-playback-stop-symbolic", "ctrl+d"],
+    ["Limpiar", "edit-clear-all-symbolic", "ctrl+l"],
+    ["Historial", "document-open-recent-symbolic", "ctrl+r"],
+    ["Buscar", "edit-find-symbolic", "ctrl+shift+f"],
+    ["Escape", "edit-clear-symbolic", "Escape"],
+]
+
+[codigo]
+nombre = "Editor de código"
+apps = ["com.microsoft.VSCode", "code", "code-oss", "Code", "codium", "com.vscodium.codium",
+        "VSCodium", "dev.zed.Zed", "zed", "cursor"]
+atajos = [
+    ["Paleta", "system-search-symbolic", "ctrl+shift+p"],
+    ["Abrir archivo", "document-open-symbolic", "ctrl+p"],
+    ["Comentar", "format-text-italic-symbolic", "ctrl+slash"],
+    ["Terminal", "utilities-terminal-symbolic", "ctrl+grave"],
+    ["Buscar en archivos", "edit-find-symbolic", "ctrl+shift+f"],
+    ["Ir a definición", "go-jump-symbolic", "F12"],
+    ["Renombrar", "document-edit-symbolic", "F2"],
+    ["Formatear", "format-justify-left-symbolic", "ctrl+shift+i"],
+    ["Subir línea", "go-up-symbolic", "alt+Up"],
+    ["Bajar línea", "go-down-symbolic", "alt+Down"],
+    ["Guardar", "document-save-symbolic", "ctrl+s"],
+    ["Deshacer", "edit-undo-symbolic", "ctrl+z"],
+]
+
+[oficina]
+nombre = "Oficina"
+apps = ["libreoffice-writer", "libreoffice-calc", "libreoffice-impress", "libreoffice-draw",
+        "libreoffice-startcenter", "soffice", "org.onlyoffice.desktopeditors", "DesktopEditors"]
+atajos = [
+    ["Negrita", "format-text-bold-symbolic", "ctrl+b"],
+    ["Cursiva", "format-text-italic-symbolic", "ctrl+i"],
+    ["Subrayado", "format-text-underline-symbolic", "ctrl+u"],
+    ["Copiar", "edit-copy-symbolic", "ctrl+c"],
+    ["Pegar", "edit-paste-symbolic", "ctrl+v"],
+    ["Pegado especial", "edit-paste-symbolic", "ctrl+shift+v"],
+    ["Deshacer", "edit-undo-symbolic", "ctrl+z"],
+    ["Rehacer", "edit-redo-symbolic", "ctrl+y"],
+    ["Buscar", "edit-find-symbolic", "ctrl+f"],
+    ["Seleccionar todo", "edit-select-all-symbolic", "ctrl+a"],
+    ["Guardar", "document-save-symbolic", "ctrl+s"],
+    ["Imprimir", "printer-symbolic", "ctrl+p"],
+]

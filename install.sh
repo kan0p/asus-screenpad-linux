@@ -50,6 +50,7 @@ install -Dm755 glasspad-launcher /usr/local/bin/glasspad-launcher
 install -Dm755 glasspad-config /usr/local/bin/glasspad-config
 install -Dm644 systemd/glasspad-launcher.service /etc/systemd/user/glasspad-launcher.service
 for f in icons/*/*.svg; do install -Dm644 "$f" "/usr/local/share/glasspad/$f"; done
+install -Dm644 atajos.toml /usr/local/share/glasspad/atajos.toml
 install -Dm644 /dev/stdin /usr/local/share/applications/io.github.kan0p.GlassPad.Config.desktop <<'EOF'
 [Desktop Entry]
 Type=Application

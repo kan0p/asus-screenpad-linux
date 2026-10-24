@@ -78,7 +78,8 @@ CONFIG_PREDETERMINADA = {
     "background_blur": 12,           # px
     "background_dim": 0,             # % de negro sobre el fondo
     "touchpad_return": 4,            # s sin tocar para volver al launcher; 0 = nunca
-    "quick_keys": [],                # [texto, ícono, "ctrl+shift+z"]; vacío = ATAJOS
+    "quick_keys": [],                # [texto, ícono, "ctrl+shift+z"]; vacío = los de atajos.toml
+    "quick_key_apps": {},            # app_id -> {"atajos": [...]}: perfiles propios
 }
 
 SALIDA_ESTABLE_MS = 1500   # la salida aparece y desaparece varias veces durante un replug
@@ -129,21 +130,9 @@ ZOOM_PASOS_NORMAL = 12      # "alejar" repetido para volver al zoom normal
 MUSICA_OCULTAR_S = 600      # en pausa más que esto, el botón de música se oculta
 PAGINAS_UTILIDAD = {u[2] for u in UTILIDADES.values()}
 
-# Quick Key por omisión: (texto, ícono, combinación)
-ATAJOS = [
-    ("Copiar", "edit-copy-symbolic", "ctrl+c"),
-    ("Pegar", "edit-paste-symbolic", "ctrl+v"),
-    ("Cortar", "edit-cut-symbolic", "ctrl+x"),
-    ("Deshacer", "edit-undo-symbolic", "ctrl+z"),
-    ("Rehacer", "edit-redo-symbolic", "ctrl+shift+z"),
-    ("Seleccionar todo", "edit-select-all-symbolic", "ctrl+a"),
-    ("Guardar", "document-save-symbolic", "ctrl+s"),
-    ("Buscar", "edit-find-symbolic", "ctrl+f"),
-    ("Nueva pestaña", "tab-new-symbolic", "ctrl+t"),
-    ("Cerrar pestaña", "window-close-symbolic", "ctrl+w"),
-    ("Captura", "applets-screenshooter-symbolic", "Print"),
-    ("Escape", "edit-clear-symbolic", "Escape"),
-]
+# perfiles de Quick Key instalados o, al probar desde el repositorio, los de al lado
+ATAJOS_TOML = next((r for r in ("/usr/local/share/glasspad/atajos.toml",)
+                    if os.path.isfile(r)), os.path.join(AQUI, "atajos.toml"))
 SOCKET_NUMPAD = "/run/glasspad-numpad.sock"
 TECLA_NUMPAD = {**{str(n): f"KP{n}" for n in range(10)}, ".": "KPDOT", "-": "KPMINUS"}
 KEYSYM_NUMPAD = {**{f"KP{n}": f"KP_{n}" for n in range(10)}, "KPDOT": "KP_Decimal",
@@ -225,6 +214,9 @@ window.glasspad.invisible { background: transparent; }
 .tecla.igual.presionado, .tecla.insertar.presionado { background: #2f7bf6; }
 .tecla image { -gtk-icon-size: 64px; }
 .atajos .tecla { font-size: 30px; }
+.cabecera-perfil { margin: 0 6px; }
+.icono-perfil { -gtk-icon-size: 64px; }
+.titulo-perfil { font-size: 36px; font-weight: 600; text-shadow: 0 1px 3px alpha(black, 0.7); }
 .atajos .tecla image { -gtk-icon-size: 72px; }
 .calculadora .tecla { font-size: 48px; }
 .insertar { min-height: 120px; font-size: 34px; }
@@ -464,6 +456,15 @@ def velocidad(bps):
         if bps < 1024 or unidad == "MB/s":
             return f"{bps:.0f} {unidad}" if unidad == "B/s" else f"{bps:.1f} {unidad}"
         bps /= 1024
+
+
+def leer_perfiles():
+    try:
+        with open(ATAJOS_TOML, "rb") as f:
+            return tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        log(f"sin perfiles de Quick Key ({ATAJOS_TOML}): {e}")
+        return {"general": {"nombre": "Generales", "atajos": []}}
 
 
 def guardar_inicio(ids, ofrecidas=None):
@@ -2034,17 +2035,69 @@ class Launcher(Gtk.Application):
     # ----- Quick Key ---------------------------------------------------------
 
     def _pagina_atajos(self):
-        self.grilla_atajos = Gtk.Grid(column_spacing=18, row_spacing=18,
-                                      column_homogeneous=True, row_homogeneous=True,
-                                      css_classes=["teclado", "atajos"])
+        self.perfiles = leer_perfiles()
+        self.solo_generales = False
+        self.atajos_icono = Gtk.Image(css_classes=["icono-perfil"])
+        self.atajos_titulo = Gtk.Label(xalign=0, hexpand=True, css_classes=["titulo-perfil"])
+        self.atajos_ficha = self._accion(Gtk.Button(css_classes=["chip"]), self._alternar_generales)
+        cabecera = Gtk.Box(spacing=20, css_classes=["cabecera-perfil"])
+        cabecera.append(self.atajos_icono)
+        cabecera.append(self.atajos_titulo)
+        cabecera.append(self.atajos_ficha)
+        self.grilla_atajos = Gtk.Grid(column_spacing=18, row_spacing=18, vexpand=True,
+                                      column_homogeneous=True, row_homogeneous=True)
+        caja = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=22,
+                       css_classes=["teclado", "atajos"])
+        caja.append(cabecera)
+        caja.append(self.grilla_atajos)
+        self.paginas.connect("notify::visible-child-name", lambda p, _: (
+            self._llenar_atajos() if p.get_visible_child_name() == "atajos" else None))
         self._llenar_atajos()
-        return self.grilla_atajos
+        return caja
+
+    def _app_activa(self):
+        """app_id de la ventana activa de la pantalla principal, o ""."""
+        if not self.wl:
+            return ""
+        pad = self._conector_pad()
+        return next((v["app_id"] for c, v in self.wl.lista()
+                     if "activa" in v["estados"] and self.wl.salida(c) != pad), "")
+
+    def _perfil(self, app_id):
+        """(nombre, atajos) para la app: perfil propio, perfil por tipo o generales."""
+        propios = self.conf["quick_key_apps"]
+        if app_id and isinstance(propios, dict) and isinstance(propios.get(app_id), dict):
+            atajos = propios[app_id].get("atajos")
+            if isinstance(atajos, list) and atajos:
+                return "propio", atajos
+        clave = app_id.lower()
+        for nombre, perfil in self.perfiles.items():
+            if clave and clave in (a.lower() for a in perfil.get("apps", [])):
+                return nombre, perfil.get("atajos", [])
+        generales = self.conf["quick_keys"]
+        if isinstance(generales, list) and generales:
+            return "general", generales
+        return "general", self.perfiles.get("general", {}).get("atajos", [])
+
+    def _alternar_generales(self):
+        self.solo_generales = not self.solo_generales
+        self._llenar_atajos()
 
     def _llenar_atajos(self):
         self._vaciar(self.grilla_atajos)
-        atajos = self.conf["quick_keys"]
-        if not isinstance(atajos, list) or not atajos:
-            atajos = ATAJOS
+        app_id = "" if self.solo_generales else self._app_activa()
+        self.app_atajos = app_id
+        tipo, atajos = self._perfil(app_id)
+        app = self._app_de(app_id) if tipo != "general" else None
+        if app:
+            self.atajos_icono.set_from_gicon(app.get_icon() or Gio.ThemedIcon.new(
+                "application-x-executable"))
+            self.atajos_titulo.set_label(f"Atajos de {app.get_display_name()}")
+        else:
+            self.atajos_icono.set_from_icon_name("input-keyboard-symbolic")
+            self.atajos_titulo.set_label("Atajos generales")
+        self.atajos_ficha.set_label("De la app" if self.solo_generales else "Generales")
+        self.atajos_ficha.set_visible(self.solo_generales or tipo != "general")
         for n, atajo in enumerate(atajos[:16]):
             try:
                 texto, icono, combinacion = atajo
@@ -2721,6 +2774,9 @@ class Launcher(Gtk.Application):
 
     def _ventanas_cambio(self):
         self._avisar_pantalla_completa()
+        if (self.ventana and self.paginas.get_visible_child_name() == "atajos"
+                and not self.solo_generales and self._app_activa() != self.app_atajos):
+            self._llenar_atajos()
         if self.ventana and self.paginas.get_visible_child_name() == "ventanas":
             self._llenar_ventanas()
 

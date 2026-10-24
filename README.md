@@ -106,7 +106,7 @@ El brillo se maneja por WMI y no por `/sys/class/backlight`. En 0 apaga solo la 
 El **Control Center** sube desde la barra: brillo del pad (se arrastra con el dedo), Number Key, Quick Key, touchpad temporal, bloquear la sesión, apagar el pad y ajustes.
 
 - **Number Key**: teclado numérico que escribe en la app activa.
-- **Quick Key**: hasta 16 atajos (copiar, pegar, deshacer, captura…) que se mandan a la app activa con `wtype`.
+- **Quick Key**: hasta 16 atajos que se mandan a la app activa con `wtype`. Cambian según la app activa: hay perfiles para navegadores, terminales, editores de código y oficina (en `atajos.toml`), y cada uno puede crear el suyo para cualquier app desde el Configurator.
 - **Calculadora**: `%` es porcentaje; **Insertar** escribe el resultado en la app activa.
 - **Calendario**: el mes con el día de hoy; se desliza de lado para cambiar de mes.
 - **Temporizador y cronómetro**: temporizador con presets y ajuste de a 10 s, alarma y aviso al terminar; cronómetro con vueltas.
@@ -139,7 +139,7 @@ Si el servicio no está, el launcher usa `wtype`.
 
 - **Apariencia**: fondo, difuminado y cuánto oscurecerlo.
 - **ScreenPad**: modos de Fn+F6, modo al iniciar sesión, bloquear el pad en apagado, alejar el cursor, atenuar, modo con batería y touchpad temporal.
-- **Quick Key**: agregar, editar, reordenar, quitar o restablecer atajos, grabando la combinación con el teclado.
+- **Quick Key**: elegir el perfil (generales o de una app) y agregar, editar, reordenar, quitar o restablecer atajos, grabando la combinación con el teclado.
 
 **Atenuar** baja el brillo del pad (al 5 % por omisión) sin apagarlo, tras unos minutos sin tocarlo o mientras la ventana activa de la pantalla principal está en pantalla completa; al tocar el pad vuelve. **Con batería** puede pasar a otro modo y volver al anterior al enchufar. La parte superior del launcher muestra la batería y su porcentaje.
 
@@ -211,6 +211,7 @@ glasspad brightness 180  brillo de los modos encendidos (1-255)
 - `glasspad-config`: GlassPad Configurator, en la pantalla principal (libadwaita)
 - `glasspad-numpad`: teclado numérico virtual de Number Key (root, `python-evdev`)
 - `icons/`: mosaicos e íconos de interfaz del launcher
+- `atajos.toml`: perfiles de Quick Key por tipo de app
 - `systemd/`: `screenpad.service` y `glasspad-numpad.socket`/`.service` (sistema), `glasspadd.service` y `glasspad-launcher.service` (sesión)
 - `udev/`, `sudoers/`: permisos y el cambio de Fn+F6 a `KEY_MACRO1`
 - `install.sh`, `uninstall.sh`
