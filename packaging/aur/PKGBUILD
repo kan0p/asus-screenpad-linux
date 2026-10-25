@@ -1,6 +1,6 @@
 # Maintainer: kan0p <46821976+kan0p@users.noreply.github.com>
 pkgname=glasspad
-pkgver=0.9.0
+pkgver=0.9.1
 pkgrel=1
 pkgdesc="ScreenPad de la ASUS ZenBook Pro 15 UX580 con NVIDIA: encendido, modos con Fn+F6 y launcher táctil"
 arch=('any')

@@ -11,7 +11,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
 APP_ID = "io.github.kan0p.GlassPad.Config"
-VERSION = "0.9.0"
+VERSION = "0.9.1"
 REPOSITORIO = "https://github.com/kan0p/asus-screenpad-linux"
 XDG_CONFIG = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
 CONFIG = os.path.join(XDG_CONFIG, "glasspad", "config.toml")
