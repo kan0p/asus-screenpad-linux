@@ -1534,6 +1534,7 @@ class Api:
         self._l = launcher
         self.carpeta = carpeta
         self._al_mostrar = []
+        self._al_deslizar = None
 
     def accion(self, widget, al_tocar, al_mantener=None):
         """Hace que el widget responda al toque en el pad. Devuelve el widget."""
@@ -1561,6 +1562,10 @@ class Api:
     def al_mostrar(self, funcion):
         """funcion(visible) al entrar o salir de la página del complemento."""
         self._al_mostrar.append(funcion)
+
+    def al_deslizar(self, funcion):
+        """funcion(hacia) al deslizar en horizontal sobre la página: 1 = siguiente, -1 = anterior."""
+        self._al_deslizar = funcion
 
     def avisar(self, texto):
         self._l._avisar(texto)
@@ -1734,6 +1739,7 @@ class Launcher(Gtk.Application):
         self._musica_cambio()
 
     def _paginas_complementos(self):
+        self.deslizadores = {}      # página de complemento -> funcion(hacia)
         for item_id, (_i, _n, pagina, mod) in list(COMPLEMENTOS.items()):
             api = Api(self, os.path.dirname(mod.__file__))
             try:
@@ -1750,6 +1756,8 @@ class Launcher(Gtk.Application):
             if api._al_mostrar:
                 self.paginas.connect("notify::visible-child-name", self._mostrar_complemento,
                                      pagina, api._al_mostrar, [False])
+            if api._al_deslizar:
+                self.deslizadores[pagina] = api._al_deslizar
 
     @staticmethod
     def _mostrar_complemento(paginas, _p, pagina, funciones, antes):
@@ -1912,10 +1920,18 @@ class Launcher(Gtk.Application):
 
     def deslizar(self, hacia):
         """Pasa de página en el inicio o de mes en el calendario: hacia = 1 o -1."""
-        if self.paginas.get_visible_child_name() == "calendario":
+        visible = self.paginas.get_visible_child_name()
+        if visible == "calendario":
             self._cambiar_mes(hacia)
             return
-        if self.paginas.get_visible_child_name() != "inicio":
+        funcion = getattr(self, "deslizadores", {}).get(visible)
+        if funcion:
+            try:
+                funcion(hacia)
+            except Exception as e:
+                log(f"{visible}: {type(e).__name__}: {e}")
+            return
+        if visible != "inicio":
             return
         n = self.pagina + hacia
         if 0 <= n < self.n_paginas:

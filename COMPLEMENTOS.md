@@ -54,6 +54,7 @@ Si se reemplazan widgets registrados, hay que quitarlos con `api.vaciar(contened
 
 - `api.css(texto)`: agrega CSS. Conviene usar clases con el nombre del complemento como prefijo.
 - `api.al_mostrar(funcion)`: `funcion(visible)` al entrar o salir de la página.
+- `api.al_deslizar(funcion)`: `funcion(hacia)` al deslizar el dedo en horizontal sobre la página: `1` hacia la siguiente, `-1` hacia la anterior. Para páginas con secciones propias.
 - `api.avisar(texto)`: aviso breve arriba del pad.
 - `api.escribir(texto)` y `api.atajo("ctrl+shift+t")`: escriben en la ventana con foco (necesitan `wtype`).
 - `api.abrir("org.gnome.Nautilus.desktop")`: abre una app.
