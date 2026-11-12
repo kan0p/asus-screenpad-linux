@@ -459,8 +459,14 @@ class Servicio:
         self._escuchar_suspension()
         self._escuchar_bateria()
 
+        # al iniciar sesión el launcher puede tardar en registrarse en D-Bus: mientras tanto
+        # monitor, y launcher en cuanto aparezca (salvo que el modo se cambie antes)
+        self.esperando_launcher = False
         if self.modo == "launcher" and not self._hay_launcher():
             self.modo = "monitor"
+            self.esperando_launcher = True
+            Gio.bus_watch_name_on_connection(self.bus, BUS_LAUNCHER, Gio.BusNameWatcherFlags.NONE,
+                                             lambda *_: self._launcher_aparecio(), None)
         self._abrir_teclas()
         self._consultar_hardware()
         self._reiniciar_atenuado()
@@ -507,7 +513,16 @@ class Servicio:
         i = ciclo.index(self.modo) + 1 if self.modo in ciclo else 0
         self.poner_modo(ciclo[i % len(ciclo)])
 
+    def _launcher_aparecio(self):
+        if not self.esperando_launcher:
+            return
+        self.esperando_launcher = False
+        if self.modo == "monitor":
+            log("launcher disponible: modo de inicio launcher")
+            self.poner_modo("launcher", manual=False)
+
     def poner_modo(self, modo, manual=True):
+        self.esperando_launcher = False
         if manual:
             self.modo_antes_bateria = None
         if modo not in MODOS:
