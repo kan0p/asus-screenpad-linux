@@ -205,7 +205,7 @@ screenpad dump-edid ARCHIVO  guarda el EDID ya corregido
 
 Todos necesitan root. `replug` existe porque COSMIC se queda con el EDID anterior. Si el panel queda negro después de cambiar algo, suele bastar con eso.
 
-Si la detección automática no encuentra el conector o el bus, se pueden fijar en `/etc/screenpad.conf`:
+`screenpad on` encuentra solo la salida del panel: lo apaga y lo enciende por ACPI, y la salida que se desconecta y vuelve a conectarse es el ScreenPad. Un monitor externo no cambia. Si en algún equipo eso no funciona, el conector o el bus se pueden fijar en `/etc/screenpad.conf`:
 
 ```sh
 CONNECTOR=HDMI-A-4
@@ -229,7 +229,8 @@ glasspad clipboard       muestra el historial del portapapeles (lo que hace Supe
 - **Cursor invisible.** Por defecto el ScreenPad quedaba en 0,0, a la izquierda de la pantalla principal, y el cursor se iba ahí. Con la disposición de arriba se arregla.
 - **No aparece después de reiniciar.** Revisa `journalctl -u screenpad`. Ahí queda registrado si no encontró la GPU o el EDID.
 - **Fn+F6 no hace nada.** Revisa `journalctl --user -u glasspadd`. Si dice "sin acceso", la regla udev no se aplicó: cierra sesión y vuelve a entrar.
-- **El launcher no aparece.** Revisa `journalctl --user -u glasspad-launcher`. Busca la salida en `/var/lib/screenpad/conector`; si no la encuentra, se puede fijar con `output = "HDMI-A-4"` en `config.toml`.
+- **El launcher no aparece.** Revisa `journalctl --user -u glasspad-launcher`. Busca la salida del panel Toshiba o la de `/var/lib/screenpad/conector`. Si `screenpad on` eligió mal la salida, `journalctl -u screenpad` muestra cuál usó.
+- **Usar el launcher sin ScreenPad.** En un equipo sin ScreenPad, `output = "HDMI-A-1"` en `config.toml` (o *Pantalla del launcher* en el configurador, que solo aparece si no hay ScreenPad) lo abre en esa pantalla, por ejemplo una táctil pequeña. Con ScreenPad esa opción se ignora.
 
 ## Archivos
 

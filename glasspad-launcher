@@ -554,22 +554,30 @@ def guardar_inicio(ids, ofrecidas=None):
     os.replace(tmp, INICIO)
 
 
+def tiene_screenpad():
+    return os.path.exists(CONECTOR) or os.path.exists("/sys/class/backlight/asus_screenpad")
+
+
 def buscar_salida(conf):
-    """El monitor del ScreenPad: el de la config, el último de 'screenpad on' o el Toshiba."""
-    nombre = conf["output"]
-    if not nombre:
-        try:
-            with open(CONECTOR) as f:
-                nombre = f.read().strip()
-        except OSError:
-            pass
+    """El ScreenPad; sin ScreenPad en el equipo, la salida 'output' de la config."""
+    try:
+        with open(CONECTOR) as f:
+            pad = f.read().strip()
+    except OSError:
+        pad = ""
     monitores = Gdk.Display.get_default().get_monitors()
-    for i in range(monitores.get_n_items()):
-        m = monitores.get_item(i)
-        if nombre and m.get_connector() == nombre:
+    lista = [monitores.get_item(i) for i in range(monitores.get_n_items())]
+    for m in lista:
+        if "Toshiba" in (m.get_manufacturer() or ""):
             return m
-        if not nombre and "Toshiba" in (m.get_manufacturer() or ""):
+    # sin EDID todavía: solo el conector de 'screenpad on' y sin fabricante
+    for m in lista:
+        if pad and m.get_connector() == pad and not m.get_manufacturer():
             return m
+    if conf["output"] and not tiene_screenpad():
+        for m in lista:
+            if m.get_connector() == conf["output"]:
+                return m
     return None
 
 

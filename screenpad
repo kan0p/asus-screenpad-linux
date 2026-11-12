@@ -12,10 +12,11 @@ CONF=/etc/screenpad.conf
 DEVID=00050031          # ASUS_WMI_DEVID_SCREENPAD_POWER
 LIGHT=00050032          # ASUS_WMI_DEVID_SCREENPAD_LIGHT
 
-# Si la autodetección falla: /etc/screenpad.conf con CONNECTOR=, I2C_BUS= o EDID=
+# Si la autodetección falla: /etc/screenpad.conf con CONNECTOR=, I2C_BUS=, EDID= o VENDOR=
 CONNECTOR=
 I2C_BUS=
 EDID=
+VENDOR=TSB              # fabricante del panel en el EDID
 [ -r "$CONF" ] && . "$CONF"
 
 log() { echo "screenpad: $*"; }
@@ -96,12 +97,37 @@ debugfs_dir() {
     return 1
 }
 
-# Con el panel encendido, su HDMI marca hotplug aunque el EDID se rechace.
+# código de fabricante del EDID (bytes 8-9), en hexadecimal
+edid_vendor() {
+    od -An -tx1 -j8 -N2 "$1" 2>/dev/null | tr -d ' \n'
+}
+
+vendor_hex() {
+    printf '%04x' $(( ($(printf %d "'$(echo "$VENDOR" | cut -c1)") - 64) << 10 |
+                      ($(printf %d "'$(echo "$VENDOR" | cut -c2)") - 64) << 5 |
+                      ($(printf %d "'$(echo "$VENDOR" | cut -c3)") - 64) ))
+}
+
+# EDID del panel en un archivo
+is_pad_edid() {
+    [ -s "$1" ] && [ "$(edid_vendor "$1")" = "$(vendor_hex)" ]
+}
+
+# Conectada y sin EDID (NVIDIA rechaza el del panel) o con el del panel ya aplicado.
+# Un monitor externo trae un EDID válido de otro fabricante.
+is_pad_output() {
+    s=/sys/class/drm/$CARD-$1
+    [ "$(cat "$s/status")" = connected ] || return 1
+    [ -s "$s/edid" ] || return 0
+    is_pad_edid "$s/edid"
+}
+
 find_connector() {
     [ -n "$CONNECTOR" ] && { echo "$CONNECTOR"; return 0; }
     for s in /sys/class/drm/$CARD-HDMI-A-*; do
         echo detect > "$s/status" 2>/dev/null
-        [ "$(cat "$s/status")" = connected ] && { basename "$s" | sed "s/^$CARD-//"; return 0; }
+        c=$(basename "$s" | sed "s/^$CARD-//")
+        is_pad_output "$c" && { echo "$c"; return 0; }
     done
     return 1
 }
@@ -117,9 +143,10 @@ read_edid() {
             grep -q '^NVIDIA i2c adapter' "$a/name" 2>/dev/null && buses="$buses ${a##*i2c-}"
         done
     fi
-    python3 -I - "$1" $buses <<'EOF'
+    python3 -I - "$1" "$VENDOR" $buses <<'EOF'
 import fcntl, os, sys
-out, buses = sys.argv[1], sys.argv[2:]
+out, buses = sys.argv[1], sys.argv[3:]
+vendor = sys.argv[2]
 for bus in buses:
     try:
         fd = os.open('/dev/i2c-%s' % bus, os.O_RDWR)
@@ -132,6 +159,9 @@ for bus in buses:
     except OSError:
         continue
     if len(d) < 128 or d[:8] != b'\x00\xff\xff\xff\xff\xff\xff\x00':
+        continue
+    v = d[8] << 8 | d[9]
+    if ''.join(chr((v >> k & 31) + 64) for k in (10, 5, 0)) != vendor:
         continue
     blocks = 1 + d[126]
     if blocks > 2 or len(d) < 128 * blocks:
@@ -155,7 +185,7 @@ pick_edid() {
     elif bus=$(read_edid "$STATEDIR/edid.bin"); then
         log "EDID del panel leído desde i2c-$bus (sumas de verificación corregidas)" >&2
         echo "$STATEDIR/edid.bin"
-    elif [ -s "$STATEDIR/edid.bin" ]; then
+    elif is_pad_edid "$STATEDIR/edid.bin"; then
         log "no se pudo leer el EDID, se usa la última copia válida" >&2
         echo "$STATEDIR/edid.bin"
     else
@@ -175,20 +205,66 @@ reset_edid() {
 
 status_file() { echo "/sys/class/drm/$CARD-$CONN/status"; }
 
-# hasta 5 s a que una salida HDMI marque "connected", sin forzar detect
+# hasta 5 s a que la salida del panel marque "connected", sin forzar detect
 wait_hotplug() {
     for i in $(seq 1 50); do
         for s in /sys/class/drm/$CARD-HDMI-A-*; do
-            [ "$(cat "$s/status")" = connected ] && return 0
+            is_pad_output "$(basename "$s" | sed "s/^$CARD-//")" && return 0
         done
         sleep 0.1
     done
     return 1
 }
 
+connected_outputs() {
+    for s in /sys/class/drm/$CARD-HDMI-A-*; do
+        echo detect > "$s/status" 2>/dev/null
+        [ "$(cat "$s/status")" = connected ] && basename "$s" | sed "s/^$CARD-//"
+    done
+}
+
+# La salida del panel sigue a su energía ACPI: se desconecta al apagarlo y
+# vuelve al encenderlo. Un monitor externo no cambia. Deja el panel encendido.
+probe_connector() {
+    prev=$(connected_outputs)
+    power 0
+    before=$prev
+    for i in $(seq 1 30); do
+        before=$(connected_outputs)
+        [ "$before" != "$prev" ] && break
+        sleep 0.1
+    done
+    power 1
+    for i in $(seq 1 50); do
+        for c in $(connected_outputs); do
+            echo "$before" | grep -qx "$c" || { echo "$c"; return 0; }
+        done
+        sleep 0.1
+    done
+    return 1
+}
+
+# deja el panel encendido y su conector en $CONN y en $STATEDIR/conector
+locate() {
+    if [ -n "$CONNECTOR" ]; then
+        power 1
+        CONN=$CONNECTOR
+    elif ! CONN=$(probe_connector); then
+        log "la conexión no cambió con la energía del panel, se busca por EDID"
+        wait_hotplug || sleep 2
+        CONN=$(find_connector) || die "el ScreenPad no apareció en ninguna salida HDMI de NVIDIA"
+    fi
+    mkdir -p "$STATEDIR"
+    echo "$CONN" > "$STATEDIR/conector"
+}
+
 # El conector del último "on", para que replug no tenga que buscarlo
 saved_connector() {
-    c=$(cat "$STATEDIR/conector" 2>/dev/null) && [ -e "/sys/class/drm/$CARD-$c/status" ] && echo "$c"
+    c=$(cat "$STATEDIR/conector" 2>/dev/null) && [ -e "/sys/class/drm/$CARD-$c/status" ] || return 1
+    # un monitor externo con EDID propio no es el panel
+    s=/sys/class/drm/$CARD-$c/edid
+    [ -s "$s" ] && ! is_pad_edid "$s" && return 1
+    echo "$c"
 }
 
 # brillo: no espera a la GPU
@@ -204,12 +280,8 @@ done
 cmd=${1:-on}
 case $cmd in
 on)
-    power 1
     backlight_on
-    wait_hotplug || sleep 2
-    CONN=$(find_connector) || die "el ScreenPad no apareció en ninguna salida HDMI de NVIDIA"
-    mkdir -p "$STATEDIR"
-    echo "$CONN" > "$STATEDIR/conector"
+    locate
     apply_edid "$(pick_edid)"
     echo on > "$(status_file)"
     sleep 1
@@ -223,12 +295,9 @@ replug)
     backlight_on
     if CONN=$(saved_connector); then
         edid=$STATEDIR/edid.bin
-        [ -s "$edid" ] || edid=$(pick_edid)
+        is_pad_edid "$edid" || edid=$(pick_edid)
     else
-        wait_hotplug || sleep 2
-        CONN=$(find_connector) || die "el ScreenPad no apareció en ninguna salida HDMI de NVIDIA"
-        mkdir -p "$STATEDIR"
-        echo "$CONN" > "$STATEDIR/conector"
+        locate
         edid=$(pick_edid)
     fi
     # 2 s desconectada para que el compositor relea el EDID
@@ -241,7 +310,7 @@ replug)
     log "activado en $CONN ($(cat "$(status_file)"))"
     ;;
 off)
-    CONN=$(find_connector) && { reset_edid; echo detect > "$(status_file)"; }
+    { CONN=$(saved_connector) || CONN=$(find_connector); } && { reset_edid; echo detect > "$(status_file)"; }
     power 0
     log "desactivado"
     ;;

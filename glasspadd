@@ -669,11 +669,15 @@ class Servicio:
         p.communicate_utf8_async(None, None, listo)
 
     def _mover_pad(self, salidas):
-        try:
-            with open(CONECTOR) as f:
-                pad = f.read().strip()
-        except OSError:
-            pad = next((n for n, s in salidas.items() if "Toshiba" in s[4]), None)
+        pad = next((n for n, s in salidas.items() if "Toshiba" in s[4]), None)
+        if pad is None:
+            try:
+                with open(CONECTOR) as f:
+                    pad = f.read().strip()
+            except OSError:
+                return
+            if salidas.get(pad, [""] * 5)[4]:
+                return              # tiene EDID propio: es un monitor externo
         principal = next((n for n in salidas if n != pad), None)
         if pad not in salidas or principal is None:
             return
