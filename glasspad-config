@@ -37,6 +37,7 @@ PREDETERMINADA = {
     "clipboard_popup_monitor": True,
     "clipboard_popup_dark": True,
     "clipboard_popup_off": True,
+    "output": "",
 }
 
 ATAJOS_COSMIC = os.path.join(XDG_CONFIG, "cosmic", "com.system76.CosmicSettings.Shortcuts",
@@ -153,14 +154,15 @@ class Ventana(Adw.ApplicationWindow):
                  (self._grupo_fondo,)),
                 ("screenpad", "ScreenPad", "input-touchpad-symbolic",
                  (self._grupo_modos, self._grupo_atenuar, self._grupo_bateria,
-                  self._grupo_touchpad)),
+                  self._grupo_touchpad, self._grupo_pantalla)),
                 ("quickkey", "Quick Key", "input-keyboard-symbolic",
                  (self._grupo_perfil, self._grupo_atajos)),
                 ("portapapeles", "Portapapeles", "edit-paste-symbolic",
                  (self._grupo_portapapeles, self._grupo_panel))):
             pagina = Adw.PreferencesPage()
             for grupo in grupos:
-                pagina.add(grupo())
+                if g := grupo():
+                    pagina.add(g)
             pestanas.add_titled_with_icon(pagina, nombre, titulo, icono)
         cabecera = Adw.HeaderBar(title_widget=Adw.ViewSwitcher(
             stack=pestanas, policy=Adw.ViewSwitcherPolicy.WIDE))
@@ -304,6 +306,29 @@ class Ventana(Adw.ApplicationWindow):
         g = Adw.PreferencesGroup(title="Batería")
         g.add(self._combo("Al usar batería, pasar a", "al enchufar vuelve al modo anterior",
                           "battery_mode", MODO_BATERIA))
+        return g
+
+    def _grupo_pantalla(self):
+        if (os.path.exists("/var/lib/screenpad/conector")
+                or os.path.exists("/sys/class/backlight/asus_screenpad")):
+            return None
+        g = Adw.PreferencesGroup(
+            title="Pantalla del launcher",
+            description="Este equipo no tiene ScreenPad; el launcher puede abrirse en otra "
+                        "pantalla, por ejemplo una táctil pequeña.")
+        opciones = [("", "Ninguna")]
+        monitores = Gdk.Display.get_default().get_monitors()
+        for i in range(monitores.get_n_items()):
+            m = monitores.get_item(i)
+            c = m.get_connector()
+            if c and not c.startswith("eDP"):
+                nombre = " ".join(filter(None, (m.get_manufacturer(), m.get_model())))
+                opciones.append((c, f"{c} ({nombre})" if nombre else c))
+        actual = self._valor("output")
+        if actual and actual not in [v for v, _t in opciones]:
+            opciones.append((actual, f"{actual} (desconectada)"))
+        g.add(self._combo("Abrir en", "se aplica al reiniciar el launcher",
+                          "output", opciones))
         return g
 
     # ----- portapapeles -------------------------------------------------------
