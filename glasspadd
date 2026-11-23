@@ -4,7 +4,7 @@
 #
 # uso: glasspadd [--debug]
 
-import array, hashlib, json, os, re, shutil, signal, socket, struct, sys, threading, time
+import array, glob, hashlib, json, os, re, shutil, signal, socket, struct, sys, threading, time
 import tomllib
 
 import evdev
@@ -57,6 +57,7 @@ MODOS_ATENUABLES = ("launcher", "monitor")
 ACTIVIDAD_S = 1             # como mucho un aviso de actividad por segundo
 # Mínimo entre dos replug seguidos
 ENTRE_REPLUG_S = 10
+VIGILANCIA_S = 3
 # modos en los que el pad va a la esquina inferior derecha de la salida principal
 # (COSMIC exige al menos 4 px de borde en común entre salidas)
 MODOS_AISLADOS = ("launcher", "dark")
@@ -442,6 +443,7 @@ class Servicio:
         self.n_copia = 0
         self.pp = None
         self.ultimo = None          # lo último copiado, para reponerlo si su app se cierra
+        self.sin_salida = 0         # revisiones seguidas sin la salida del pad con la pantalla activa
         self.ultimo_replug = 0      # GLib.get_monotonic_time() del último replug
 
         self.teclas = None
@@ -457,6 +459,7 @@ class Servicio:
         Gio.bus_own_name_on_connection(self.bus, BUS, Gio.BusNameOwnerFlags.NONE, None,
                                        lambda *_: self._sin_nombre())
         self._escuchar_suspension()
+        GLib.timeout_add_seconds(VIGILANCIA_S, self._vigilar_salida)
         self._escuchar_bateria()
 
         # al iniciar sesión el launcher puede tardar en registrarse en D-Bus: mientras tanto
@@ -643,6 +646,49 @@ class Servicio:
         self._ubicar_salida()
         self.reconciliar()
         return False
+
+    # ----- pantalla apagada por inactividad ----------------------------------
+
+    def _pantalla_encendida(self):
+        for d in glob.glob("/sys/class/drm/card*-eDP-*/dpms"):
+            try:
+                with open(d) as f:
+                    if f.read().strip() == "On":
+                        return True
+            except OSError:
+                pass
+        return False
+
+    def _vigilar_salida(self):
+        """Tras apagarse la pantalla por inactividad el pad puede quedar sin salida: se reactiva."""
+        if (self.modo == "off" or self.ocupado or self.espera or self.hw_encendido is None
+                or not self._pantalla_encendida() or not shutil.which("cosmic-randr")):
+            self.sin_salida = 0
+            return True
+        try:
+            p = Gio.Subprocess.new(["cosmic-randr", "list", "--kdl"],
+                                   Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE)
+        except GLib.Error:
+            return True
+
+        def listo(p, res):
+            try:
+                _, salida, _ = p.communicate_utf8_finish(res)
+            except GLib.Error:
+                return
+            salidas = leer_salidas(salida or "")
+            if len(salidas) > 1 or not salida:
+                self.sin_salida = 0
+                return
+            self.sin_salida += 1
+            if self.sin_salida < 2 or self.ocupado or self.espera:
+                return
+            log("la pantalla volvió y el pad no tiene salida: se reactiva")
+            self.sin_salida = 0
+            self.hw_encendido = False
+            self.reconciliar()
+        p.communicate_utf8_async(None, None, listo)
+        return True
 
     # ----- posición del pad en COSMIC ---------------------------------------
 
